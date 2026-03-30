@@ -1,42 +1,32 @@
 name: 土地開發進度自動查核機器人
 
-# 設定觸發時間 (這裡設定每天台灣時間早上 9 點自動執行)
-# GitHub 的時區是 UTC，所以台灣 9:00 = UTC 1:00
 on:
   schedule:
     - cron: '0 1 * * *'
-  workflow_dispatch: # 保留一個按鈕讓您可以隨時手動點擊執行
+  workflow_dispatch:
 
 jobs:
   run-crawler:
     runs-on: ubuntu-latest
-
+    
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 lxml firebase-admin google-generativeai
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml firebase-admin google-generativeai
 
-    - name: Run Crawler Script
-      env:
-        # 將剛剛設定的 Secrets 傳遞給 Python 環境變數
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        FIREBASE_UID: ${{ secrets.FIREBASE_UID }}
-        FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-      run: |
-        python land_crawler.py
-5. 點擊右上角的綠色按鈕 `Commit changes...` 儲存檔案。
-
-### 🎉 大功告成！
-現在，這隻 AI 爬蟲就正式住進雲端了！
-* **每天早上 9 點**，GitHub 伺服器會自動開機、裝好套件、抓取新聞、讓 AI 判斷、然後寫進資料庫。
-* 當您進辦公室打開網頁時，右上角的「鈴鐺🔔」如果亮起紅燈，代表昨晚或今晨有抓到實質進度，您可以點開審核，一鍵「同意」就能加入專案報告中。
-* 如果您想現在立刻測試雲端執行，可以點擊 GitHub 上方的 **「Actions」** 分頁 -> 點選左側的「土地開發進度自動查核機器人」 -> 點擊右側的 **「Run workflow」**，過大概 30 秒您就會看到網頁鈴鐺響起了！
+      - name: Run Crawler Script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FIREBASE_UID: ${{ secrets.FIREBASE_UID }}
+          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+        run: |
+          python land_crawler.py
