@@ -8,7 +8,6 @@ on:
 jobs:
   run-crawler:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -20,13 +19,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          python -m pip install --upgrade pip
+          python3 -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml firebase-admin google-generativeai
 
       - name: Run Crawler Script
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          FIREBASE_UID: ${{ secrets.FIREBASE_UID }}
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+          FIREBASE_UID: ${{ secrets.FIREBASE_UID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          python land_crawler.py
+          python3 land_crawler.py
