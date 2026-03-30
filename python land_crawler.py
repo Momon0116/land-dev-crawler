@@ -35,15 +35,16 @@ class LandDevCrawler:
         self.app_id = "land-dev-app"
 
         # 🔑 讀取環境變數 (GitHub Secrets)
+        # 注意：os.environ.get 如果讀不到會回傳 None
         self.firebase_cred_raw = os.environ.get("FIREBASE_CREDENTIALS")
         self.target_user_id = os.environ.get("FIREBASE_UID")
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
 
-        # 診斷：確認變數是否存在
-        logger.info("--- 啟動診斷 (Cloud Diagnostic) ---")
-        logger.info(f"Secret-Credentials: {'✅ 偵測到' if self.firebase_cred_raw else '❌ 缺失'}")
-        logger.info(f"Secret-UID: {'✅ 偵測到' if self.target_user_id else '❌ 缺失'}")
-        logger.info(f"Secret-AI_Key: {'✅ 偵測到' if self.gemini_api_key else '❌ 缺失'}")
+        # 啟動診斷：確認變數長度與狀態 (但不顯示內容)
+        logger.info("--- [雲端環境連線診斷] ---")
+        logger.info(f"1. 憑證字串 (CREDENTIALS): {'✅ 已偵測 (長度:' + str(len(self.firebase_cred_raw)) + ')' if self.firebase_cred_raw else '❌ 缺失 (環境變數讀取不到)'}")
+        logger.info(f"2. 使用者 ID (UID): {'✅ 已偵測' if self.target_user_id else '❌ 缺失 (環境變數讀取不到)'}")
+        logger.info(f"3. AI 金鑰 (AI_KEY): {'✅ 已偵測' if self.gemini_api_key else '❌ 缺失 (環境變數讀取不到)'}")
         
         self._initialize_services()
 
@@ -53,43 +54,43 @@ class LandDevCrawler:
             if self.firebase_cred_raw:
                 # 雲端模式：強化 JSON 解析與清理
                 raw_json = self.firebase_cred_raw.strip()
-                # 容錯處理：移除可能的頭尾多餘雙引號 (常見於 GitHub Secrets 貼上錯誤)
+                # 容錯處理：移除可能的頭尾多餘引號
                 if raw_json.startswith('"') and raw_json.endswith('"'):
                     raw_json = json.loads(raw_json)
                 
                 try:
                     cred_dict = json.loads(raw_json)
                     cred = credentials.Certificate(cred_dict)
-                    logger.info("☁️ 雲端憑證解析成功")
+                    logger.info("☁️ 雲端憑證 JSON 解析成功")
                 except json.JSONDecodeError as e:
-                    logger.error(f"❌ JSON 解析失敗，請檢查 Secret 內容是否為完整的大括號 JSON 格式: {e}")
+                    logger.error(f"❌ 雲端憑證內容並非正確的 JSON 格式，請檢查 Secret 是否包含大括號。錯誤: {e}")
                     sys.exit(1)
             else:
                 # 本機測試模式
                 local_path = r"C:\Users\User\work-report\Python\land-dev-dashboard-firebase-adminsdk-fbsvc-5811c0deb7.json"
                 if os.path.exists(local_path):
-                    logger.info(f"💻 本機模式，讀取金鑰：{local_path}")
+                    logger.info(f"💻 未偵測到環境變數，改從本機載入金鑰：{local_path}")
                     cred = credentials.Certificate(local_path)
                     if not self.target_user_id:
-                        # 這是您本機日誌中看到的 UID，填入以供本機測試
+                        # 此 UID 來自您提供的 Dashboard JSON 權限
                         self.target_user_id = "UDlQYBAOPsZlGSSxFddidzzDPMk2"
                 else:
-                    logger.error("❌ 錯誤：找不到任何金鑰來源（Secrets 或 JSON 檔案）")
+                    logger.error("❌ 嚴重錯誤：找不到任何金鑰來源！雲端變數與本機檔案皆缺失。")
                     sys.exit(1)
 
             if not firebase_admin._apps:
                 firebase_admin.initialize_app(cred)
             self.db = firestore.client()
-            logger.info(f"✅ Firebase 連線成功，使用者：{self.target_user_id}")
+            logger.info(f"✅ Firebase 資料庫連線成功。目標 UID: {self.target_user_id}")
 
             # 2. 初始化 AI
             if self.gemini_api_key:
                 genai.configure(api_key=self.gemini_api_key)
                 self.ai_model = genai.GenerativeModel('gemini-2.5-flash')
-                logger.info("🧠 AI 分析模組就緒")
+                logger.info("🧠 AI 分析引擎已就緒")
 
         except Exception as e:
-            logger.error(f"🔥 系統初始化致命錯誤: {e}")
+            logger.error(f"🔥 系統連線致命錯誤: {e}")
             sys.exit(1)
 
     def _build_session(self):
@@ -102,8 +103,8 @@ class LandDevCrawler:
     def crawl_and_update(self):
         if not self.db or not self.target_user_id: return
 
-        # 指向資料夾：artifacts -> land-dev-app -> users -> {uid} -> projects
         try:
+            # 讀取案件清單
             user_ref = self.db.collection('artifacts').document(self.app_id).collection('users').document(self.target_user_id)
             docs = user_ref.collection('projects').stream()
             
@@ -112,16 +113,16 @@ class LandDevCrawler:
                 p_data = d.to_dict()
                 if not p_data.get("isArchived"): projects.append(p_data)
 
-            logger.info(f"📥 成功讀取 {len(projects)} 筆案件")
-            if len(projects) == 0:
-                logger.warning("💡 提示：目前資料庫中沒有進行中的案件。請先到網頁端「新增案件」後再執行機器人。")
+            logger.info(f"📥 成功從資料庫載入 {len(projects)} 筆案件資料")
+            
+            if not projects:
+                logger.warning("💡 目前雲端資料庫內沒有任何「列管中」的案件，機器人無須搜尋。")
                 return
 
             for proj in projects:
                 name, city = proj.get("name"), proj.get("city", "")
                 logger.info(f"🔍 搜尋案件：【{city} {name}】")
                 
-                # Google News RSS 搜尋
                 params = {"q": f'"{city}" "{name}"', "hl": "zh-TW", "gl": "TW", "ceid": "TW:zh-Hant"}
                 res = self.session.get("https://news.google.com/rss/search", params=params, timeout=10)
                 soup = BeautifulSoup(res.content, 'xml')
@@ -130,26 +131,23 @@ class LandDevCrawler:
                 for item in items:
                     title, link = item.title.text, item.link.text
                     if name[:2] in title:
-                        # 避免重複抓取
                         if any(h.get("sourceUrl") == link for h in proj.get("history", [])): continue
-
-                        # 使用 AI 進行摘要
-                        note = f"抓取到新聞：{title[:15]}..."
+                        
+                        ai_note = f"抓取到新聞：{title[:15]}..."
                         if self.ai_model:
                             try:
-                                prompt = f"摘要新聞『{title}』與土地開發案『{city}{name}』的具體進度關係，15字內。若無關請回 False。"
+                                prompt = f"摘要新聞『{title}』與土地開發案『{city}{name}』的關係，15字內。若無關請回 False。"
                                 response = self.ai_model.generate_content(prompt)
                                 if "False" in response.text: continue
-                                note = response.text.strip()
+                                ai_note = response.text.strip()
                             except: pass
 
-                        logger.info(f"🚨 發現動態：{note}")
-                        # 寫入待審核區
+                        logger.info(f"🚨 偵測到新進度：{ai_note}")
                         rec_id = str(datetime.now().timestamp())
                         user_ref.collection('pending_updates').document(rec_id).set({
                             "id": rec_id, "projectId": proj.get("id"), "projectName": name,
                             "date": datetime.now().strftime("%Y.%m.%d"),
-                            "note": f"【AI查核】{note}", "source": "網路新聞",
+                            "note": f"【機器人查核】{ai_note}", "source": "新聞資訊",
                             "sourceUrl": link, "createdAt": firestore.SERVER_TIMESTAMP
                         })
                         break 
