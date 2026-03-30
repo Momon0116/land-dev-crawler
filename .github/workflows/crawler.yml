@@ -27,4 +27,5 @@ jobs:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
           FIREBASE_UID: ${{ secrets.FIREBASE_UID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      run: python3 Python/land_crawler.py
+      run: |
+      python3 Python/land_crawler.py
