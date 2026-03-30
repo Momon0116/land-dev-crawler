@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>專案進程追蹤管理系統</title>
+  
+  <!-- 載入環境依賴 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 使用穩定版本的 React -->
+  <script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- 載入 Lucide 核心庫 (非 React 版，徹底解決 forwardRef 與 undefined 報錯) -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f8fafc; }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .table-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    
+    /* 鈴鐺擴散光圈動畫 */
+    @keyframes pulse-ring {
+      0% { transform: scale(.8); opacity: 0.5; }
+      80%, 100% { opacity: 0; }
+    }
+    .bell-pulse::before {
+      content: '';
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background-color: #fbbf24;
+      border-radius: 0.5rem;
+      animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+      z-index: -1;
+    }
+  </style>
+</head>
+<body class="text-slate-800 antialiased">
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+    import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+    const { useState, useEffect, useRef } = React;
+
+    // === 自定義 Icon 元件 (徹底解決 undefined 與 map 導致 React 崩潰的問題) ===
+    const Icon = ({ name, size = 20, className = "" }) => {
+      // 將 kebab-case 轉換為 PascalCase (例如 list-todo 轉為 ListTodo)
+      const iconName = name.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('');
+      const iconData = window.lucide?.icons[iconName];
+      
+      // 若圖示尚未載入或不存在，回傳一個相同大小的空白 SVG 佔位符
+      if (!iconData) return <svg width={size} height={size} className={className} />;
+      
+      let html = '';
+      if (Array.isArray(iconData)) {
+        // 判斷資料格式：若是 ["svg", {attrs}, [children]] 格式
+        if (typeof iconData[0] === 'string') {
+          const children = iconData[2] || [];
+          html = children.map(([cTag, cAttrs]) => {
+            const attrStr = Object.entries(cAttrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ');
+            return `<${cTag} ${attrStr}></${cTag}>`;
+          }).join('');
+        } 
+        // 判斷資料格式：若是 [ ["path", {attrs}], ["line", {attrs}] ] 格式 (Lucide 新版)
+        else {
+          html = iconData.map(([cTag, cAttrs]) => {
+            const attrStr = Object.entries(cAttrs || {}).map(([k, v]) => `${k}="${v}"`).join(' ');
+            return `<${cTag} ${attrStr}></${cTag}>`;
+          }).join('');
+        }
+      }
+      
+      return (
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width={size}
+          height={size}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={className}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      );
+    };
+
+    // ==========================================
+    // 1. Firebase 初始化
+    // ==========================================
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+  apiKey: "AIzaSyDmt430oA0Opg8SbXBBb-HHR6KcztMU6Qc",
+  authDomain: "land-dev-dashboard.firebaseapp.com",
+  projectId: "land-dev-dashboard",
+  storageBucket: "land-dev-dashboard.firebasestorage.app",
+  messagingSenderId: "264462869739",
+  appId: "1:264462869739:web:ff99412ffb2b85f7fd8aae",
+  measurementId: "G-9CVBLEPBEJ"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'land-dev-app';
+
+    const INITIAL_TYPES = [
+      { name: '重劃案件', phases: ["成立籌備會", "第一次會員大會", "重劃會章程", "成立重劃會", "核定開發計畫書", "核定重劃範圍", "核定重劃計畫書", "公告重劃計畫書", "核定工程預算書圖", "禁止土地移轉、分割及設定負擔公告", "評定重劃前後地價", "核定計算負擔總計表", "土地分配公告", "地籍整理及權利變更登記", "交接土地", "公共設施點交接管", "重劃完成", "公共設施保固期", "財務結算", "成果報告"] },
+      { name: '區段徵收', phases: ["報核範圍", "准予徵收", "協議價購", "公告徵收", "補償發放"] },
+      { name: '一般開發', phases: [] },
+      { name: '都市更新', phases: ["劃定更新地區", "事業概要", "都市更新事業計畫", "權利變更計畫", "施工", "完工交屋"] }
+    ];
+
+    function App() {
+      const [user, setUser] = useState(null);
+      const [projects, setProjects] = useState([]);
+      const [projectTypes, setProjectTypes] = useState([]);
+      const [pendingUpdates, setPendingUpdates] = useState([]);
+      const [isInboxOpen, setIsInboxOpen] = useState(false);
+      const [currentView, setCurrentView] = useState('dashboard');
+      const [selectedId, setSelectedId] = useState(null);
+      const [showArchived, setShowArchived] = useState(false); 
+      const [activeFilter, setActiveFilter] = useState({ type: 'all', value: null });
+      const [searchQuery, setSearchQuery] = useState('');
+      const [isDbLoaded, setIsDbLoaded] = useState(false);
+
+      // Modal 狀態
+      const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+      const [modalMode, setModalMode] = useState('add'); 
+      const [formData, setFormData] = useState({});
+      const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+      const [confirmDelete, setConfirmDelete] = useState(false);
+      const [historyFormData, setHistoryFormData] = useState({});
+      const [isTypeModalOpen, setIsTypeModalOpen] = useState(false);
+      const [settingsView, setSettingsView] = useState('list');
+      const [editingTypeIndex, setEditingTypeIndex] = useState(-1);
+      const [newTypeData, setNewTypeData] = useState({ name: '', phases: [''] });
+
+      // Firebase 登入與資料監聽
+      useEffect(() => {
+        const initAuth = async () => {
+          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } else {
+            await signInAnonymously(auth);
+          }
+        };
+        initAuth();
+        return onAuthStateChanged(auth, setUser);
+      }, []);
+
+      useEffect(() => {
+        if (!user) return;
+        const userPath = ['artifacts', appId, 'users', user.uid];
+        
+        const unsubProjects = onSnapshot(collection(db, ...userPath, 'projects'), (snap) => {
+          setProjects(snap.docs.map(d => d.data()));
+          setIsDbLoaded(true);
+        }, err => console.error(err));
+
+        const unsubTypes = onSnapshot(collection(db, ...userPath, 'projectTypes'), (snap) => {
+          if (snap.empty) {
+            INITIAL_TYPES.forEach(async (t) => await setDoc(doc(db, ...userPath, 'projectTypes', t.name), t));
+          } else {
+            setProjectTypes(snap.docs.map(d => d.data()));
+          }
+        }, err => console.error(err));
+
+        const unsubPending = onSnapshot(collection(db, ...userPath, 'pending_updates'), (snap) => {
+          const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+          setPendingUpdates(list.sort((a,b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0)));
+        }, err => console.error(err));
+
+        return () => { unsubProjects(); unsubTypes(); unsubPending(); };
+      }, [user]);
+
+      const selectedProject = projects.find(p => p.id === selectedId) || null;
+
+      // 日期處理工具
+      const parseTWDate = (twDateStr) => {
+        if (!twDateStr) return 0;
+        const parts = twDateStr.split(/[./-]/);
+        if (parts.length !== 3) return 0;
+        return new Date(parseInt(parts[0]) + 1911, parseInt(parts[1]) - 1, parseInt(parts[2])).getTime();
+      };
+
+      const getDaysSinceUpdate = (twDateStr) => {
+        const ts = parseTWDate(twDateStr);
+        if (!ts) return 0;
+        return Math.max(0, Math.floor((new Date().getTime() - ts) / 86400000));
+      };
+
+      // 審核功能
+      const handleApproveUpdate = async (update) => {
+        if (!user) return;
+        const proj = projects.find(p => p.id === update.projectId);
+        if (!proj) return;
+        const { projectId, projectName, createdAt, ...cleanUpdate } = update;
+        const updated = { ...proj, history: [cleanUpdate, ...(proj.history || [])] };
+        updated.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date));
+        updated.lastUpdate = updated.history[0]?.date.replace(/\./g, '/') || updated.lastUpdate;
+        updated.status = updated.history[0]?.status || updated.status;
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', proj.id.toString()), updated);
+        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'pending_updates', update.id));
+      };
+
+      const handleRejectUpdate = async (id) => {
+        if (!user) return;
+        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'pending_updates', id));
+      };
+
+      const getTypeColor = (type) => {
+        if (!type) return 'bg-slate-50 text-slate-500 border-slate-200';
+        if (type.includes('重劃')) return 'bg-blue-50 text-blue-700 border-blue-200';
+        if (type.includes('區段徵收')) return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+        if (type.includes('一般')) return 'bg-amber-50 text-amber-700 border-amber-200';
+        if (type.includes('都市更新') || type.includes('都更')) return 'bg-purple-50 text-purple-700 border-purple-200';
+        return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+      };
+
+      const getCityColor = (city) => {
+        if (!city) return 'bg-slate-50 text-slate-500 border-slate-200';
+        if (city.includes('新竹市')) return 'bg-cyan-50 text-cyan-700 border-cyan-200';
+        if (city.includes('新竹縣')) return 'bg-teal-50 text-teal-700 border-teal-200';
+        if (city.includes('桃園')) return 'bg-sky-50 text-sky-700 border-sky-200';
+        if (city.includes('台北') || city.includes('新北')) return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+        if (city.includes('台中')) return 'bg-blue-50 text-blue-700 border-blue-200';
+        if (city.includes('台南')) return 'bg-amber-50 text-amber-700 border-amber-200';
+        if (city.includes('高雄')) return 'bg-orange-50 text-orange-700 border-orange-200';
+        return 'bg-slate-50 text-slate-700 border-slate-200';
+      };
+
+      const getStatusColorBadge = (status) => 'bg-blue-50 text-blue-700 border-blue-200';
+
+      const STALLED_THRESHOLD = 180;
+      const activeProjectsList = projects.filter(p => !p.isArchived);
+      
+      const dashboardStats = {
+        total: activeProjectsList.length,
+        recent: activeProjectsList.filter(p => getDaysSinceUpdate(p.lastUpdate) <= 30).length,
+        active: activeProjectsList.filter(p => p.status?.includes('審議') || (getDaysSinceUpdate(p.lastUpdate) > 30 && getDaysSinceUpdate(p.lastUpdate) <= STALLED_THRESHOLD)).length,
+        stalled: activeProjectsList.filter(p => getDaysSinceUpdate(p.lastUpdate) > STALLED_THRESHOLD).length
+      };
+
+      const displayedProjects = projects.filter(p => {
+        if (showArchived ? !p.isArchived : p.isArchived) return false;
+        if (activeFilter.type === 'projectType' && p.type !== activeFilter.value) return false;
+        if (activeFilter.type === 'city' && p.city !== activeFilter.value) return false;
+        if (searchQuery) {
+          const q = searchQuery.toLowerCase();
+          return p.name?.toLowerCase().includes(q) || p.status?.toLowerCase().includes(q) || p.history?.[0]?.note?.toLowerCase().includes(q);
+        }
+        return true;
+      });
+
+      const StatCard = ({ label, value, colorText, iconName }) => (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm relative h-[88px] md:h-[110px] overflow-hidden w-full transition-all hover:shadow-md hover:border-blue-100">
+          <div className="absolute bottom-3 md:bottom-4 left-4 flex items-center gap-1.5 md:gap-2 opacity-70">
+            <Icon name={iconName} className={`w-4 h-4 md:w-5 md:h-5 ${colorText}`} />
+            <span className="text-xs md:text-sm font-black text-slate-500 uppercase tracking-wider">{label}</span>
+          </div>
+          <div className="absolute top-2 md:top-3 right-4">
+            <span className={`text-[32px] md:text-[44px] font-black ${colorText} leading-none tracking-tighter`}>{value}</span>
+          </div>
+        </div>
+      );
+
+      // Modal 操作
+      const openAddModal = () => {
+        setModalMode('add');
+        setFormData({ name: '', type: projectTypes[0]?.name || '', city: '', status: '初始建檔', handler: '', handlerPhone: '', agency: '', area: '', schedule: '', currentPhaseIndex: 0 });
+        setIsProjectModalOpen(true);
+      };
+
+      const openEditModal = () => {
+        setModalMode('edit');
+        setFormData({ ...selectedProject });
+        setIsProjectModalOpen(true);
+      };
+
+      const handleSaveProject = async () => {
+        if (!user) return;
+        const typeDef = projectTypes.find(t => t.name === formData.type);
+        const hasPhases = typeDef && typeDef.phases && typeDef.phases.length > 0;
+        
+        let projId = formData.id;
+        let projectData = { ...formData };
+
+        if (modalMode === 'add') {
+          const today = new Date();
+          const dateStr = `${today.getFullYear()-1911}/${String(today.getMonth()+1).padStart(2,'0')}/${String(today.getDate()).padStart(2,'0')}`;
+          projId = Date.now();
+          projectData = {
+            ...projectData, id: projId, lastUpdate: dateStr, currentPhaseIndex: hasPhases ? 0 : -1, phaseDates: {}, isArchived: false,
+            history: [{ id: Date.now().toString(), date: dateStr.replace(/\//g, '.'), note: '案件初始建檔', phaseIndex: -1, status: formData.status || '初始建檔' }] 
+          };
+        } else {
+          let newPhaseIndex = formData.currentPhaseIndex !== undefined ? formData.currentPhaseIndex : 0;
+          if (selectedProject?.type !== formData.type) newPhaseIndex = hasPhases ? 0 : -1;
+          projectData.currentPhaseIndex = newPhaseIndex;
+        }
+        
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'projects', projId.toString());
+        await setDoc(docRef, projectData);
+        setIsProjectModalOpen(false);
+      };
+
+      const toggleArchive = async () => {
+        if (!selectedProject || !user) return;
+        const updatedProject = { ...selectedProject, isArchived: !selectedProject.isArchived };
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString());
+        await setDoc(docRef, updatedProject);
+      };
+
+      const openHistoryModal = () => {
+        const today = new Date();
+        const twYear = today.getFullYear() - 1911;
+        const dateStr = `${twYear}.${String(today.getMonth() + 1).padStart(2, '0')}.${String(today.getDate()).padStart(2, '0')}`;
+        const typeDef = projectTypes.find(t => t.name === selectedProject?.type);
+        const hasPhases = typeDef && typeDef.phases.length > 0;
+
+        setHistoryFormData({
+          mode: 'add', id: null, date: dateStr, note: '', source: '', sourceUrl: '', 
+          belongToPhase: hasPhases ? (selectedProject.currentPhaseIndex !== -1 ? selectedProject.currentPhaseIndex : -1) : -1,
+          updatePhase: false, newPhaseIndex: hasPhases ? (selectedProject.currentPhaseIndex !== -1 ? selectedProject.currentPhaseIndex + 1 : 0) : 0,
+          status: selectedProject?.status || '' 
+        });
+        setConfirmDelete(false);
+        setIsHistoryModalOpen(true);
+      };
+
+      const openEditHistoryModal = (log) => {
+        setHistoryFormData({
+          mode: 'edit', id: log.id, date: log.date, note: log.note, source: log.source || '', sourceUrl: log.sourceUrl || '',
+          belongToPhase: log.phaseIndex !== undefined ? log.phaseIndex : -1,
+          updatePhase: false, newPhaseIndex: 0,
+          status: log.status || '' 
+        });
+        setConfirmDelete(false);
+        setIsHistoryModalOpen(true);
+      };
+
+      const handleSaveHistory = async () => {
+        if (!historyFormData.date || !historyFormData.note || !user) return;
+        let updatedProject = { ...selectedProject };
+        const typeDef = projectTypes.find(t => t.name === updatedProject.type);
+        const hasPhases = typeDef && typeDef.phases.length > 0;
+
+        if (historyFormData.mode === 'add') {
+          const newHistoryItem = { 
+            id: Date.now().toString(), date: historyFormData.date, note: historyFormData.note, 
+            source: historyFormData.source, sourceUrl: historyFormData.sourceUrl, 
+            phaseIndex: parseInt(historyFormData.belongToPhase), status: historyFormData.status || updatedProject.status 
+          };
+          updatedProject.history = [newHistoryItem, ...(updatedProject.history || [])];
+          
+          if (hasPhases && historyFormData.updatePhase) {
+            const parsedPhaseIndex = parseInt(historyFormData.newPhaseIndex);
+            updatedProject.currentPhaseIndex = parsedPhaseIndex;
+            if (typeDef.phases[parsedPhaseIndex]) {
+              updatedProject.phaseDates = { ...updatedProject.phaseDates, [typeDef.phases[parsedPhaseIndex]]: historyFormData.date };
+            }
+          }
+        } else {
+          updatedProject.history = (updatedProject.history || []).map(log => 
+            log.id === historyFormData.id ? { ...log, date: historyFormData.date, note: historyFormData.note, source: historyFormData.source, sourceUrl: historyFormData.sourceUrl, phaseIndex: parseInt(historyFormData.belongToPhase), status: historyFormData.status || log.status } : log
+          );
+        }
+        
+        updatedProject.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date));
+        updatedProject.status = updatedProject.history[0]?.status || updatedProject.status;
+        updatedProject.lastUpdate = updatedProject.history[0]?.date.replace(/\./g, '/') || updatedProject.lastUpdate;
+        
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString());
+        await setDoc(docRef, updatedProject);
+        setIsHistoryModalOpen(false);
+      };
+
+      const handleDeleteHistory = async (id) => {
+        if (!selectedProject || !user || !db) return;
+        let updatedProject = { ...selectedProject };
+        updatedProject.history = (updatedProject.history || []).filter(log => log.id !== id);
+        if (updatedProject.history.length > 0) {
+          updatedProject.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date));
+          updatedProject.status = updatedProject.history[0]?.status || updatedProject.status;
+          updatedProject.lastUpdate = updatedProject.history[0]?.date.replace(/\./g, '/') || updatedProject.lastUpdate;
+        }
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString());
+        await setDoc(docRef, updatedProject);
+        setIsHistoryModalOpen(false);
+        setConfirmDelete(false);
+      };
+
+      const handlePhaseChange = (index, value) => {
+        const updated = [...newTypeData.phases];
+        updated[index] = value;
+        setNewTypeData({ ...newTypeData, phases: updated });
+      };
+      
+      const handleSaveNewType = async () => {
+        if (!newTypeData.name.trim() || !user) return;
+        const validPhases = newTypeData.phases.map(p => p.trim()).filter(p => p !== '');
+        const newTypeObj = { name: newTypeData.name.trim(), phases: validPhases };
+        
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'projectTypes', newTypeObj.name);
+        await setDoc(docRef, newTypeObj);
+        
+        setSettingsView('list');
+        setNewTypeData({ name: '', phases: [''] });
+      };
+
+      return (
+        <div className="min-h-screen pb-12 w-full bg-slate-50">
+          {/* Header */}
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-50 w-full shadow-sm">
+            <div className="w-full px-4 md:px-8 h-16 sm:h-20 flex items-center justify-between">
+              <div className="flex items-center gap-3 cursor-pointer" onClick={() => {setCurrentView('dashboard'); setSelectedId(null);}}>
+                <Icon name="briefcase" className="w-6 h-6 sm:w-8 sm:h-8 text-blue-600" />
+                <h1 className="text-xl md:text-2xl font-black tracking-wide text-slate-800">專案進程追蹤管理系統</h1>
+              </div>
+              <div className="flex items-center gap-3 md:gap-4">
+                
+                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list');}} className="hidden sm:flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm">
+                  <Icon name="settings" className="w-5 h-5" /> 系統設定
+                </button>
+                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list');}} className="sm:hidden p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 active:scale-95 transition-transform shadow-sm">
+                  <Icon name="settings" className="w-5 h-5" />
+                </button>
+
+                <button onClick={openAddModal} className="hidden sm:flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm">
+                  <Icon name="plus" className="w-5 h-5" /> 新增案件
+                </button>
+                <button onClick={openAddModal} className="sm:hidden p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 active:scale-95 transition-transform shadow-sm">
+                  <Icon name="plus" className="w-5 h-5" />
+                </button>
+
+                {/* 🚀 鈴鐺移至最右側並加入醒目樣式 */}
+                <div className="relative ml-1">
+                  <button 
+                    onClick={() => setIsInboxOpen(true)} 
+                    className={`p-2.5 md:px-4 md:py-2.5 rounded-lg border shadow-sm relative flex items-center gap-2 transition-all duration-300 ${
+                      pendingUpdates.length > 0 
+                        ? 'bg-amber-100 border-amber-300 text-amber-800 hover:bg-amber-200 ring-2 ring-amber-400 ring-offset-1 bell-pulse' 
+                        : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Icon name="bell" className={`w-5 h-5 md:w-6 md:h-6 ${pendingUpdates.length > 0 ? 'animate-pulse text-amber-600' : 'text-slate-500'}`} />
+                    <span className="hidden md:inline font-bold text-sm">
+                      {pendingUpdates.length > 0 ? '待審核動態' : '無新動態'}
+                    </span>
+                    {pendingUpdates.length > 0 && (
+                      <span className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white text-xs font-black flex items-center justify-center rounded-full border-2 border-white shadow-md animate-bounce">
+                        {pendingUpdates.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+              </div>
+            </div>
+          </header>
+
+          <main className="w-full py-6">
+            {currentView === 'dashboard' ? (
+              <div className="w-full px-4 md:px-8 space-y-8 animate-in fade-in duration-300">
+                {/* 4張統計卡片 */}
+                <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-6">
+                  <StatCard label="追蹤案件總數" value={dashboardStats.total} colorText="text-blue-600" iconName="file-text" />
+                  <StatCard label="近30日有更新" value={dashboardStats.recent} colorText="text-emerald-600" iconName="check-circle" />
+                  <StatCard label="穩定推進" value={dashboardStats.active} colorText="text-amber-600" iconName="clock" />
+                  <StatCard label="停滯警示" value={dashboardStats.stalled} colorText="text-red-600" iconName="alert-circle" />
+                </div>
+                
+                {/* 案件總表與篩選功能 */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="px-6 md:px-8 py-4 border-b border-slate-100 bg-slate-50/80 flex flex-col gap-4">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                      <h2 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                        <Icon name="list-todo" className="w-6 h-6 text-blue-600" /> 案件進度總表
+                      </h2>
+                      <div className="flex bg-slate-200/60 p-1 rounded-lg self-start sm:self-auto">
+                        <button onClick={() => setShowArchived(false)} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${!showArchived ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>列管中</button>
+                        <button onClick={() => setShowArchived(true)} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${showArchived ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>已解除</button>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-col xl:flex-row items-start xl:items-center gap-4 w-full">
+                       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar w-full xl:w-auto pb-1">
+                          <span className="text-sm font-bold text-slate-400 shrink-0">快速篩選：</span>
+                          <button onClick={() => setActiveFilter({type: 'all', value: null})} className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'all' ? 'bg-slate-700 text-white border-slate-700 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>全部</button>
+                          
+                          {projectTypes.map(t => (
+                             <button key={t.name} onClick={() => setActiveFilter({type: 'projectType', value: t.name})} className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'projectType' && activeFilter.value === t.name ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>{t.name}</button>
+                          ))}
+                          
+                          <div className="w-px h-4 bg-slate-300 mx-1 shrink-0"></div>
+                          
+                          {[...new Set(projects.map(p => p.city).filter(Boolean))].map(city => (
+                             <button key={city} onClick={() => setActiveFilter({type: 'city', value: city})} className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'city' && activeFilter.value === city ? 'bg-teal-600 text-white border-teal-600 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>{city}</button>
+                          ))}
+                       </div>
+                       
+                       <div className="relative w-full xl:w-72 xl:ml-auto shrink-0">
+                          <Icon name="search" className="w-4 h-4 md:w-5 md:h-5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm font-medium outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100" placeholder="搜尋案名、狀態、摘要..." />
+                       </div>
+                    </div>
+                  </div>
+
+                  <div className="table-scroll no-scrollbar overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-white text-slate-500 text-sm font-black border-b border-slate-200 uppercase tracking-widest">
+                          <th className="px-6 py-5 text-center w-20">項次</th>
+                          <th className="px-6 py-5 min-w-[280px]">案名與類型</th>
+                          <th className="px-6 py-5 w-48">最新更新日期</th>
+                          <th className="px-6 py-5 w-48">目前狀態</th>
+                          <th className="px-6 py-5">最新動態摘要</th>
+                          <th className="px-6 py-5 text-center w-24">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {displayedProjects.length === 0 ? (
+                          <tr><td colSpan="6" className="text-center py-16 text-slate-400 font-bold text-lg">沒有符合條件的資料</td></tr>
+                        ) : displayedProjects.map((p, i) => {
+                          const isStalled = !p.isArchived && getDaysSinceUpdate(p.lastUpdate) > STALLED_THRESHOLD;
+                          const recentHistory = p.history?.[0] || null;
+                          return (
+                            <tr key={p.id} onClick={() => { setSelectedId(p.id); setCurrentView('detail'); window.scrollTo(0,0); }} className="hover:bg-slate-50 cursor-pointer group transition-colors">
+                              <td className="px-6 py-6 text-center text-slate-400 font-bold text-base relative">
+                                {isStalled && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-500 rounded-r-md"></div>}
+                                {i+1}
+                              </td>
+                              <td className="px-6 py-6">
+                                <div className="flex flex-col gap-1.5">
+                                  <span className="font-black text-xl text-blue-800 group-hover:underline">{p.name}</span>
+                                  <div className="flex gap-2">
+                                    <span className={`px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm ${getCityColor(p.city)}`}>{p.city}</span>
+                                    <span className={`px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm ${getTypeColor(p.type)}`}>{p.type}</span>
+                                    {isStalled && <span className="px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm bg-red-50 text-red-600 border-red-200">停滯警示</span>}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-6 py-6 text-base font-black text-slate-600">{p.lastUpdate}</td>
+                              <td className="px-6 py-6"><span className={`px-3.5 py-1.5 border rounded-lg text-base font-bold shadow-sm whitespace-nowrap ${getStatusColorBadge(p.status)}`}>{p.status}</span></td>
+                              <td className="px-6 py-6 text-base text-slate-500 max-w-[350px] truncate">{recentHistory?.note || '-'}</td>
+                              <td className="px-6 py-6 text-center text-slate-300 group-hover:text-blue-600">
+                                <Icon name="chevron-right" className="w-5 h-5 md:w-6 md:h-6 mx-auto transition-transform group-hover:translate-x-1" />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* ========================================================================================= */
+              /* 詳細頁面：完整還原群組化排序與經典雙欄歷程排版 */
+              /* ========================================================================================= */
+              selectedProject ? (() => {
+                const typeDef = projectTypes.find(t => t.name === selectedProject.type);
+                const phases = typeDef?.phases || [];
+                const hasPhases = phases.length > 0;
+                const safePhaseIndex = selectedProject.currentPhaseIndex !== undefined ? selectedProject.currentPhaseIndex : -1;
+                const progressPercent = hasPhases ? Math.max(0, Math.round((safePhaseIndex / phases.length) * 100)) : 0;
+                
+                // 全局排序與智能群組邏輯
+                const allEntries = [];
+                (selectedProject.history || []).forEach(log => {
+                   allEntries.push({ type: 'log', log: log, timestamp: parseTWDate(log.date), phaseIdx: log.phaseIndex });
+                });
+                
+                phases.forEach((p, idx) => {
+                   const logsForPhase = (selectedProject.history || []).filter(h => h.phaseIndex === idx);
+                   const isPending = idx > safePhaseIndex;
+                   
+                   if (isPending) {
+                     allEntries.push({ type: 'pending-phase', phase: p, idx: idx, timestamp: Infinity }); 
+                   } else if (logsForPhase.length === 0) {
+                     const pDate = selectedProject.phaseDates?.[p];
+                     const ts = pDate ? parseTWDate(pDate) : 0; 
+                     allEntries.push({ type: 'phase-milestone', phase: p, idx: idx, date: pDate, timestamp: ts });
+                   }
+                });
+                
+                allEntries.sort((a, b) => {
+                   if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+                   if (a.type === 'pending-phase' && b.type !== 'pending-phase') return 1;
+                   if (a.type !== 'pending-phase' && b.type === 'pending-phase') return -1;
+                   if (a.type === 'pending-phase' && b.type === 'pending-phase') return a.idx - b.idx;
+                   return 0; 
+                });
+
+                const groupedEntries = [];
+                let currentGroup = null;
+
+                allEntries.forEach(entry => {
+                   if (entry.type === 'pending-phase') {
+                      if (currentGroup) { groupedEntries.push(currentGroup); currentGroup = null; }
+                      groupedEntries.push(entry);
+                   } else if (entry.type === 'phase-milestone') {
+                      if (currentGroup) { groupedEntries.push(currentGroup); currentGroup = null; }
+                      groupedEntries.push({ type: 'log-group', groupType: `phase-${entry.idx}`, isGeneral: false, phaseIdx: entry.idx, phaseName: entry.phase, logs: [] });
+                   } else {
+                      const pIdx = entry.log.phaseIndex;
+                      const isGeneral = (pIdx === -1 || pIdx === undefined);
+                      const groupType = isGeneral ? 'general' : `phase-${pIdx}`;
+                      if (!currentGroup || currentGroup.groupType !== groupType) {
+                         if (currentGroup) groupedEntries.push(currentGroup);
+                         currentGroup = { type: 'log-group', groupType, isGeneral, phaseIdx: pIdx, phaseName: isGeneral ? '一般與前期歷程' : (phases[pIdx] || '未知階段'), logs: [entry.log] };
+                      } else {
+                         currentGroup.logs.push(entry.log);
+                      }
+                   }
+                });
+                if (currentGroup) groupedEntries.push(currentGroup);
+
+                return (
+                  <div className="w-full animate-in fade-in duration-300 pb-12">
+                    <div className="w-full px-4 md:px-8">
+                      
+                      <div className="sticky top-16 sm:top-20 z-30 pt-6 pb-4 bg-slate-50 bg-opacity-95 backdrop-blur-sm border-b border-slate-200/50 transition-all w-full">
+                        <div className="flex items-center justify-between mb-4">
+                          <button onClick={() => {setCurrentView('dashboard'); setSelectedId(null);}} className="flex items-center gap-1.5 text-slate-500 font-bold text-sm md:text-base hover:text-slate-800 transition-colors">
+                            <Icon name="arrow-left" className="w-4 h-4 md:w-5 md:h-5" /> 返回總表
+                          </button>
+                          <div className="flex gap-3">
+                            <button onClick={toggleArchive} className={`px-4 py-2 bg-white border-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${selectedProject.isArchived ? 'border-emerald-500 text-emerald-600' : 'border-slate-300 text-slate-500'}`}>
+                              {selectedProject.isArchived ? '恢復列管' : '解除列管'}
+                            </button>
+                            <button onClick={openEditModal} className="px-4 py-2 bg-white border-2 border-amber-500 text-amber-600 rounded-lg text-sm font-bold shadow-sm flex items-center gap-2 hover:bg-amber-50">
+                              <Icon name="pencil" className="w-4 h-4" /> 編輯專案
+                            </button>
+                          </div>
+                        </div>
+
+                        {selectedProject.isArchived && (
+                          <div className="bg-slate-200/70 text-slate-600 px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 border border-slate-300 mb-4 shadow-sm">
+                            <Icon name="archive" className="w-5 h-5" /> 此案件目前已解除列管，不計入總表統計中。
+                          </div>
+                        )}
+
+                        <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm flex flex-col xl:flex-row justify-between items-start xl:items-center gap-8">
+                          <div className="space-y-4">
+                            <div className="flex items-center gap-4">
+                              <span className={`px-3 py-1.5 border rounded-lg text-sm font-black shadow-sm ${getTypeColor(selectedProject.type)}`}>{selectedProject.type}</span>
+                              <h2 className="text-3xl md:text-4xl font-black text-slate-800">{selectedProject.name}</h2>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-6 text-base font-bold text-slate-500">
+                              <span className="flex items-center gap-2"><Icon name="clock" className="w-5 h-5" /> 最後更新：{selectedProject.lastUpdate}</span>
+                              <span className={`px-3.5 py-1.5 border rounded-lg shadow-sm font-bold ${getStatusColorBadge(selectedProject.status)}`}>目前狀態：{selectedProject.status}</span>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-12 gap-y-3 text-base w-full xl:w-auto">
+                            <div className="text-slate-500 whitespace-nowrap">縣市：<span className="text-slate-800 font-bold ml-1">{selectedProject.city || '-'}</span></div>
+                            <div className="text-slate-500 whitespace-nowrap">機關：<span className="text-slate-800 font-bold ml-1">{selectedProject.agency || '-'}</span></div>
+                            <div className="text-slate-500 whitespace-nowrap">承辦：<span className="text-slate-800 font-bold ml-1">{selectedProject.handler || '-'}</span></div>
+                            <div className="text-slate-500 whitespace-nowrap">面積：<span className="text-slate-800 font-bold ml-1">{selectedProject.area || '-'}</span></div>
+                            <div className="text-slate-500 whitespace-nowrap">期程：<span className="text-slate-800 font-bold ml-1">{selectedProject.schedule || '-'}</span></div>
+                            <div className="text-slate-500 whitespace-nowrap">電話：<span className="text-slate-800 font-bold ml-1">{selectedProject.handlerPhone || '-'}</span></div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="w-full mt-6 relative z-0">
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm w-full">
+                          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-6 md:p-8 border-b border-slate-100 gap-6 bg-slate-50/50 rounded-t-2xl">
+                            <h3 className="font-black text-xl md:text-2xl flex items-center gap-2 md:gap-3 text-slate-800">
+                              <Icon name="list-todo" className="w-6 h-6 md:w-7 md:h-7 text-blue-600" /> 
+                              {hasPhases ? '專案進度與歷程' : '專案歷程紀錄'}
+                            </h3>
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 md:gap-6 w-full sm:w-auto justify-between sm:justify-end">
+                              <button onClick={openHistoryModal} className="px-5 py-2 md:py-2.5 bg-blue-600 text-white rounded-lg text-sm md:text-base font-bold shadow-md hover:bg-blue-700 flex items-center gap-2 transition-colors w-full sm:w-auto justify-center">
+                                <Icon name="plus" className="w-5 h-5" /> 新增歷程
+                              </button>
+                              
+                              {hasPhases && (
+                                <>
+                                  <div className="hidden sm:block h-8 w-px bg-slate-200"></div>
+                                  <div className="flex items-center gap-3 w-full sm:w-auto">
+                                    <span className="text-sm md:text-base text-slate-500 font-bold hidden sm:inline whitespace-nowrap">總進度 {progressPercent}%</span>
+                                    <div className="w-full sm:w-40 h-3 md:h-4 bg-slate-200 rounded-full overflow-hidden">
+                                      <div className="h-full bg-blue-600 rounded-full transition-all duration-1000" style={{width: `${progressPercent}%`}}></div>
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <div className="p-6 md:p-8 w-full overflow-x-hidden">
+                            <div className="relative border-l-2 border-slate-200 ml-4 md:ml-6 space-y-10 md:space-y-12 pb-6 w-full">
+                              
+                              {groupedEntries.length === 0 ? (
+                                 <div className="py-16 text-center text-slate-400 font-bold text-base italic bg-slate-50 rounded-xl w-full border border-dashed border-slate-200">
+                                   本專案尚無任何歷史紀錄
+                                 </div>
+                              ) : groupedEntries.map((group, idx) => {
+                                
+                                if (group.type === 'log-group') {
+                                   const isGen = group.isGeneral;
+                                   const isCompleted = !isGen && group.phaseIdx < safePhaseIndex;
+                                   const isCurrent = !isGen && group.phaseIdx === safePhaseIndex;
+                                   
+                                   return (
+                                     <div key={`group-${idx}`} className="relative pl-8 md:pl-12 w-full">
+                                        <div className="absolute left-[-13px] md:left-[-15px] top-0 bg-white">
+                                          {isGen && hasPhases ? <Icon name="activity" className="w-6 h-6 md:w-7 md:h-7 text-amber-500" /> : 
+                                           isCompleted ? <Icon name="check-circle" className="w-6 h-6 md:w-7 md:h-7 text-emerald-500" /> :
+                                           isCurrent ? <Icon name="arrow-right-circle" className="w-6 h-6 md:w-7 md:h-7 text-blue-600" /> :
+                                           (!hasPhases ? <div className="w-6 h-6 md:w-7 md:h-7 rounded-full border-2 border-white shadow-sm bg-blue-600 ring-4 ring-blue-50 flex items-center justify-center"><div className="w-2 h-2 bg-white rounded-full"></div></div> : <Icon name="circle-dashed" className="w-6 h-6 md:w-7 md:h-7 text-slate-300" />)}
+                                        </div>
+                                        
+                                        <div className="flex flex-col lg:flex-row gap-4 lg:gap-8 w-full pr-4 opacity-100">
+                                          {(hasPhases || !isGen) && (
+                                            <div className="w-full lg:w-72 xl:w-80 shrink-0 flex flex-col gap-1.5 pt-0.5">
+                                              <div className="flex items-start gap-3 text-slate-700">
+                                                <span className={`text-sm md:text-base ${isGen ? 'text-amber-500' : 'text-slate-500'} w-5 text-right font-black shrink-0 mt-0.5`}>
+                                                  {isGen ? '*' : `${group.phaseIdx+1}.`}
+                                                </span>
+                                                <div className="flex flex-col gap-1">
+                                                  <span className={`text-base md:text-xl font-black ${isCurrent ? 'text-blue-700' : 'text-slate-700'}`}>{group.phaseName}</span>
+                                                  {isGen ? (
+                                                    <span className="text-sm md:text-base font-bold text-amber-600">非屬特定法定階段</span>
+                                                  ) : (
+                                                    <>
+                                                      {(isCompleted || isCurrent) && group.logs.length > 0 && <span className="text-sm md:text-base text-emerald-600 font-bold">{group.logs[group.logs.length-1].date}</span>}
+                                                      <span className="text-sm md:text-base font-bold text-slate-400">{isCompleted ? '已完成' : (isCurrent ? '進行中' : '')}</span>
+                                                    </>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+                                          
+                                          <div className="w-full flex-1">
+                                            <div className={`${isGen && hasPhases ? 'bg-amber-50/40 border-amber-200/60' : 'bg-slate-50 border-slate-200'} rounded-xl p-5 md:p-6 w-full relative`}>
+                                              <div className={`hidden sm:flex text-xs md:text-sm font-bold text-slate-500 mb-4 border-b ${isGen && hasPhases ? 'border-amber-200/80' : 'border-slate-200/80'} pb-3 gap-6 pr-10`}>
+                                                <div className="w-24 md:w-28 shrink-0">發生日期</div>
+                                                <div className="w-32 md:w-40 shrink-0">案件狀態</div>
+                                                <div className="flex-1">歷程說明與來源</div>
+                                              </div>
+                                              <div className="space-y-0">
+                                                {group.logs.slice().sort((a,b) => parseTWDate(a.date) - parseTWDate(b.date)).map(l => (
+                                                  <div key={l.id} className={`flex flex-col sm:flex-row sm:items-start border-b ${isGen && hasPhases ? 'border-amber-200/40' : 'border-slate-200/60'} last:border-0 py-4 first:pt-0 last:pb-0 relative pr-10 hover:bg-slate-50/30 group gap-3 sm:gap-6`}>
+                                                    <div className={`sm:w-24 md:w-28 shrink-0 text-sm md:text-base font-black ${isGen && hasPhases ? 'text-amber-700' : 'text-slate-700'} sm:mt-1.5`}>
+                                                      {l.date}
+                                                    </div>
+                                                    <div className="sm:w-32 md:w-40 shrink-0 text-xs md:text-sm font-bold sm:mt-0.5">
+                                                      <span className="inline-flex items-center text-slate-700 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm leading-tight break-words">
+                                                        {l.status || '-'}
+                                                      </span>
+                                                    </div>
+                                                    <div className="flex-1 text-sm md:text-base text-slate-700 font-medium leading-relaxed sm:mt-1">
+                                                      <p>{l.note}</p>
+                                                      {l.source && (
+                                                        <div className="mt-2.5">
+                                                          {l.sourceUrl ? (
+                                                            <a href={l.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800 hover:underline transition-colors shadow-sm break-all line-clamp-2 text-xs" title={l.source}>
+                                                              <Icon name="external-link" className="w-3.5 h-3.5 shrink-0" /> <span className="truncate">{l.source}</span>
+                                                            </a>
+                                                          ) : (
+                                                            <span className="inline-flex items-center text-slate-500 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm line-clamp-2 text-xs">
+                                                              {l.source}
+                                                            </span>
+                                                          )}
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                    <button onClick={() => openEditHistoryModal(l)} className={`absolute right-0 top-3 p-2 bg-white border border-slate-200 shadow-sm rounded-lg text-slate-400 ${isGen && hasPhases ? 'hover:text-amber-600' : 'hover:text-blue-600'} opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity`}>
+                                                      <Icon name="pencil" className="w-4 h-4 md:w-5 md:h-5" />
+                                                    </button>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                     </div>
+                                   );
+                                } 
+                                else if (group.type === 'pending-phase') {
+                                   return (
+                                     <div key={`pending-${group.idx}`} className="relative pl-8 md:pl-12 w-full opacity-40 grayscale grayscale-100">
+                                        <div className="absolute left-[-13px] md:left-[-15px] top-0 bg-white">
+                                           <Icon name="circle-dashed" className="w-6 h-6 md:w-7 md:h-7 text-slate-300" />
+                                        </div>
+                                        <div className="flex flex-col lg:flex-row gap-4 lg:gap-8 w-full pr-4">
+                                          <div className="w-full lg:w-72 xl:w-80 shrink-0 flex flex-col gap-1.5 pt-0.5">
+                                            <div className="flex items-start gap-3 text-slate-700">
+                                              <span className="text-sm md:text-base text-slate-500 w-5 text-right font-bold shrink-0 mt-0.5">{group.idx+1}.</span>
+                                              <div className="flex flex-col gap-1">
+                                                <span className="text-base md:text-xl font-black text-slate-700">{group.phase}</span>
+                                                <span className="text-sm md:text-base font-bold text-slate-400">尚未啟動之程序</span>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                     </div>
+                                   );
+                                }
+                                return null;
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : null
+            )}
+          </main>
+
+          {/* 🚀 待審核收件匣 (Inbox) Modal */}
+          {isInboxOpen && (
+            <div className="fixed inset-0 bg-slate-900/70 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-300">
+              <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden border border-slate-200">
+                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-amber-50">
+                  <span className="font-black text-amber-900 text-lg flex items-center gap-3">
+                    <Icon name="inbox" className="w-6 h-6 text-amber-600" /> AI 查核待審核動態區
+                  </span>
+                  <button onClick={()=>setIsInboxOpen(false)} className="text-amber-700 hover:bg-amber-100 p-2 rounded-full transition-colors"><Icon name="x" className="w-6 h-6" /></button>
+                </div>
+                <div className="p-6 overflow-y-auto space-y-4 bg-slate-50 flex-1">
+                  {pendingUpdates.length === 0 ? (
+                    <div className="text-center py-16 text-slate-400 font-bold italic">目前收件匣是空的，機器人正在雲端守候中...</div>
+                  ) : pendingUpdates.map(update => (
+                    <div key={update.id} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4 hover:border-blue-400 transition-all">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <div className="text-blue-800 font-black text-xl">{update.projectName}</div>
+                          <div className="text-slate-400 text-xs font-bold mt-1 flex items-center gap-1"><Icon name="clock" className="w-3.5 h-3.5"/> 抓取日期：{update.date}</div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={()=>handleRejectUpdate(update.id)} className="p-2.5 text-red-500 hover:bg-red-50 rounded-xl transition-colors" title="捨棄刪除"><Icon name="trash-2" className="w-5 h-5"/></button>
+                          <button onClick={()=>handleApproveUpdate(update)} className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-black text-sm shadow-md hover:bg-blue-700 active:scale-95 transition-all">確認並加入</button>
+                        </div>
+                      </div>
+                      <div className="text-slate-700 text-base leading-relaxed p-4 bg-slate-50 rounded-xl border border-slate-100 italic">"{update.note}"</div>
+                      {update.sourceUrl && (
+                        <a href={update.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs font-black text-blue-600 hover:text-blue-800 hover:underline transition-colors mt-2">
+                          <Icon name="external-link" className="h-3.5 w-3.5" /> 前往來源新聞網頁確認
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 表單 Modal - 系統設定 */}
+          {isTypeModalOpen && (
+            <div className="fixed inset-0 bg-slate-900/60 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-2xl rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85vh] border-0 sm:border-2 sm:border-slate-200 animate-in slide-in-from-bottom-4 duration-200">
+                <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 sm:rounded-t-2xl">
+                  <span className="font-black text-slate-800 text-lg flex items-center gap-2"><Icon name="settings" className="w-5 h-5 text-slate-600" /> 系統設定</span>
+                  <button onClick={()=>setIsTypeModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button>
+                </div>
+                <div className="p-6 overflow-y-auto no-scrollbar space-y-8 flex-1">
+                  
+                  {settingsView === 'list' ? (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                        <div className="flex items-center gap-2">
+                          <Icon name="list-todo" className="w-5 h-5 text-blue-600" />
+                          <h4 className="font-black text-slate-800 text-base md:text-lg">案件類型與法定程序管理</h4>
+                        </div>
+                        <button onClick={() => { setSettingsView('add'); setNewTypeData({ name: '', phases: [''] }); }} className="text-sm font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors">
+                          <Icon name="plus-circle" className="w-4 h-4" /> 新增類型
+                        </button>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {projectTypes.map((type, idx) => (
+                          <div key={idx} onClick={() => { setEditingTypeIndex(idx); setNewTypeData(JSON.parse(JSON.stringify(type))); setSettingsView('edit'); }} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-blue-400 hover:shadow-md transition-all group">
+                            <div className="flex flex-col gap-1">
+                              <span className="font-black text-slate-700 group-hover:text-blue-700">{type.name}</span>
+                              <span className="text-xs font-bold text-slate-400">共 {type.phases.length} 個法定程序</span>
+                            </div>
+                            <Icon name="chevron-right" className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-transform group-hover:translate-x-1" />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-3 pb-2 border-b border-slate-100">
+                        <button onClick={() => setSettingsView('list')} className="p-1 hover:bg-slate-100 rounded-lg transition-colors"><Icon name="arrow-left" className="w-5 h-5 text-slate-500" /></button>
+                        <Icon name="list-todo" className="w-5 h-5 text-blue-600" />
+                        <h4 className="font-black text-slate-800 text-base md:text-lg">{settingsView === 'add' ? '新增案件類型' : `編輯：${projectTypes[editingTypeIndex]?.name}`}</h4>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-black text-slate-700">1. 類型名稱</label>
+                        <input type="text" value={newTypeData.name} onChange={e=>setNewTypeData({...newTypeData, name:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：市地重劃" />
+                      </div>
+                      <div className="space-y-3">
+                        <label className="text-sm font-black text-slate-700">2. 設定法定階段 (依序)</label>
+                        <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                          {newTypeData.phases.map((phase, idx) => (
+                            <div key={idx} className="flex items-center gap-3">
+                              <span className="text-sm font-black text-slate-400 w-5">{idx+1}.</span>
+                              <input type="text" value={phase} onChange={e=>{const updated = [...newTypeData.phases]; updated[idx] = e.target.value; setNewTypeData({ ...newTypeData, phases: updated });}} className="flex-1 p-2.5 bg-white rounded-lg text-sm font-bold border border-slate-300 outline-none" placeholder="階段名稱" />
+                              <button onClick={()=>setNewTypeData({...newTypeData, phases: newTypeData.phases.filter((_, i) => i !== idx)})} className="p-2.5 text-slate-400 hover:text-red-500 bg-white rounded-lg border border-slate-300 shadow-sm"><Icon name="trash-2" className="w-4 h-4" /></button>
+                            </div>
+                          ))}
+                          <button onClick={()=>setNewTypeData({...newTypeData, phases: [...newTypeData.phases, '']})} className="w-full py-3 flex items-center justify-center gap-2 text-sm font-bold text-blue-600 border-2 border-dashed border-blue-300 rounded-lg mt-4 bg-blue-50 hover:bg-blue-100 transition-colors"><Icon name="plus-circle" className="w-4 h-4" /> 新增一階</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+                <div className="p-5 bg-slate-50 border-t border-slate-100 flex justify-end shrink-0 sm:rounded-b-2xl">
+                  {settingsView === 'list' ? (
+                    <button onClick={()=>setIsTypeModalOpen(false)} className="px-8 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100">關閉設定</button>
+                  ) : (
+                    <div className="flex gap-3 w-full sm:w-auto">
+                      <button onClick={()=>setSettingsView('list')} className="flex-1 sm:flex-none px-6 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100">返回</button>
+                      <button onClick={handleSaveNewType} className="flex-1 sm:flex-none px-8 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700">儲存設定</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 表單 Modal - 新增/編輯案件 */}
+          {isProjectModalOpen && (
+            <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-3xl rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90vh] animate-in slide-in-from-bottom-4 duration-200">
+                <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 sm:rounded-t-2xl">
+                  <span className="font-black text-slate-800 text-lg md:text-xl">{modalMode === 'add' ? '新增案件資料' : '編輯案件資料'}</span>
+                  <button onClick={()=>setIsProjectModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button>
+                </div>
+                <div className="p-6 md:p-8 overflow-y-auto space-y-5 md:space-y-6 flex-1">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5 md:gap-6">
+                    <div className="space-y-2 md:col-span-2"><label className="text-sm font-black text-slate-700">案件名稱</label><input type="text" value={formData.name || ''} onChange={e=>setFormData({...formData, name:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold focus:ring-2 focus:ring-blue-500 outline-none" /></div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-700 flex justify-between items-center"><span>案件類型</span><button onClick={() => {setIsProjectModalOpen(false); setIsTypeModalOpen(true);}} className="text-blue-600 hover:underline flex items-center gap-1 text-xs"><Icon name="settings" className="w-3.5 h-3.5" /> 新增類型</button></label>
+                      <select value={formData.type || ''} onChange={e=>setFormData({...formData, type:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none">{projectTypes.map(t=><option key={t.name} value={t.name}>{t.name}</option>)}</select>
+                    </div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">縣市區域</label><input type="text" value={formData.city || ''} onChange={e=>setFormData({...formData, city:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
+                    <div className="space-y-2 md:col-span-2"><label className="text-sm font-black text-slate-700">目前狀態</label><input type="text" value={formData.status || ''} onChange={e=>setFormData({...formData, status:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
+                    
+                    {((projectTypes.find(t => t.name === formData.type)?.phases) || []).length > 0 && modalMode === 'edit' && (
+                      <div className="space-y-2 md:col-span-2 bg-blue-50 p-5 rounded-xl border border-blue-100">
+                        <label className="text-sm font-black text-blue-800">修正進度階段 (手動調整時間軸位置)</label>
+                        <select value={formData.currentPhaseIndex || 0} onChange={e=>setFormData({...formData, currentPhaseIndex: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none mt-2">
+                          <option value={-1}>未啟動法定階段</option>
+                          {(projectTypes.find(t => t.name === formData.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}
+                        </select>
+                      </div>
+                    )}
+
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">主辦機關</label><input type="text" value={formData.agency || ''} onChange={e=>setFormData({...formData, agency:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">承辦人員</label><input type="text" value={formData.handler || ''} onChange={e=>setFormData({...formData, handler:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">聯絡電話</label><input type="text" value={formData.handlerPhone || ''} onChange={e=>setFormData({...formData, handlerPhone:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">開發面積</label><input type="text" value={formData.area || ''} onChange={e=>setFormData({...formData, area:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">預計期程</label><input type="text" value={formData.schedule || ''} onChange={e=>setFormData({...formData, schedule:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
+                  </div>
+                </div>
+                <div className="p-5 sm:p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-4 shrink-0 sm:rounded-b-2xl">
+                  <button onClick={()=>setIsProjectModalOpen(false)} className="w-full sm:w-auto px-8 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg hover:bg-slate-50 shadow-sm">取消</button>
+                  <button onClick={handleSaveProject} className="w-full sm:w-auto px-10 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700">確認儲存</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 表單 Modal - 新增/編輯歷程紀錄 */}
+          {isHistoryModalOpen && selectedProject && (
+            <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 backdrop-blur-sm">
+              <div className="bg-white w-full max-w-2xl rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90vh] animate-in slide-in-from-bottom-4 duration-200">
+                <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 sm:rounded-t-2xl">
+                  <span className="font-black text-slate-800 text-lg md:text-xl flex items-center gap-2.5"><Icon name="file-text" className="w-5 h-5 md:w-6 md:h-6 text-blue-600" /> {historyFormData.mode === 'add' ? '新增歷程紀錄' : '編輯歷程紀錄'}</span>
+                  <button onClick={()=>setIsHistoryModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button>
+                </div>
+                <div className="p-6 md:p-8 overflow-y-auto space-y-5 md:space-y-6 flex-1">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-700">發生日期</label>
+                      <input type="text" value={historyFormData.date || ''} onChange={e=>setHistoryFormData({...historyFormData, date:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：115.03.20" />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-black text-slate-700 flex items-center gap-2">案件狀態 <span className="text-xs font-bold text-slate-400 font-normal">(將自動同步專案總表)</span></label>
+                      <input type="text" value={historyFormData.status || ''} onChange={e=>setHistoryFormData({...historyFormData, status:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：都計審議中" />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <label className="text-sm font-black text-slate-700">歷程說明內容</label>
+                      <textarea rows="4" value={historyFormData.note || ''} onChange={e=>setHistoryFormData({...historyFormData, note:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed" placeholder="請填寫最新辦理情形..."></textarea>
+                    </div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">資料來源 (選填)</label><input type="text" value={historyFormData.source || ''} onChange={e=>setHistoryFormData({...historyFormData, source:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" placeholder="例如：內政部會議紀錄" /></div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">來源網址 (選填)</label><input type="text" value={historyFormData.sourceUrl || ''} onChange={e=>setHistoryFormData({...historyFormData, sourceUrl:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none text-blue-600" placeholder="https://" /></div>
+                  </div>
+
+                  {((projectTypes.find(t => t.name === selectedProject.type)?.phases) || []).length > 0 && (
+                    <div className="pt-5 border-t border-slate-200 space-y-5">
+                      <div className="space-y-2">
+                        <label className="text-sm font-black text-slate-700">此紀錄屬於哪個階段？</label>
+                        <select value={historyFormData.belongToPhase !== undefined ? historyFormData.belongToPhase : -1} onChange={e=>setHistoryFormData({...historyFormData, belongToPhase: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none text-blue-800">
+                          <option value={-1}>* 非屬特定法定階段 (一般與前期歷程)</option>
+                          {(projectTypes.find(t => t.name === selectedProject.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}
+                        </select>
+                      </div>
+
+                      {historyFormData.mode === 'add' && (
+                        <div className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
+                          <label className="flex items-center gap-3 cursor-pointer">
+                            <input type="checkbox" checked={historyFormData.updatePhase || false} onChange={e=>setHistoryFormData({...historyFormData, updatePhase: e.target.checked})} className="w-5 h-5 text-blue-600 rounded border-slate-300" />
+                            <span className="text-sm md:text-base font-black text-slate-700">同步推進案件主階段</span>
+                          </label>
+                          {historyFormData.updatePhase && (
+                            <select value={historyFormData.newPhaseIndex || 0} onChange={e=>setHistoryFormData({...historyFormData, newPhaseIndex: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none mt-2 text-blue-800">
+                              {(projectTypes.find(t => t.name === selectedProject.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}
+                            </select>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-100 flex flex-row items-center justify-between gap-2 shrink-0 sm:rounded-b-2xl overflow-x-auto no-scrollbar w-full">
+                  {historyFormData.mode === 'edit' ? (
+                     confirmDelete ? (
+                         <div className="flex items-center gap-2 shrink-0">
+                            <button onClick={async () => {
+                              let updatedProject = { ...selectedProject };
+                              updatedProject.history = (updatedProject.history || []).filter(log => log.id !== historyFormData.id);
+                              if (updatedProject.history.length > 0) {
+                                updatedProject.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date));
+                                updatedProject.status = updatedProject.history[0]?.status || updatedProject.status;
+                                updatedProject.lastUpdate = updatedProject.history[0]?.date.replace(/\./g, '/') || updatedProject.lastUpdate;
+                              }
+                              await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString()), updatedProject);
+                              setIsHistoryModalOpen(false);
+                              setConfirmDelete(false);
+                            }} className="px-4 py-2.5 bg-red-600 text-white rounded-lg text-sm md:text-base font-bold shadow-sm whitespace-nowrap">確定刪除</button>
+                            <button onClick={()=>setConfirmDelete(false)} className="px-4 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg text-sm md:text-base font-bold whitespace-nowrap">取消</button>
+                         </div>
+                      ) : (
+                         <button onClick={()=>setConfirmDelete(true)} className="shrink-0 px-4 py-2.5 text-red-600 border border-red-200 bg-red-50 hover:bg-red-100 rounded-lg text-sm md:text-base font-bold whitespace-nowrap">刪除此紀錄</button>
+                      )
+                  ) : <div className="shrink-0"></div>}
+                  <div className="flex items-center gap-2 shrink-0">
+                     <button onClick={()=>setIsHistoryModalOpen(false)} className="px-6 py-2.5 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg hover:bg-slate-50 shadow-sm whitespace-nowrap">取消</button>
+                     <button onClick={handleSaveHistory} className="px-8 py-2.5 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700 whitespace-nowrap">確認儲存</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
