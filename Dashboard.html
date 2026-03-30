@@ -41,7 +41,7 @@
 
   <script type="text/babel" data-type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
-    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+    import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
     import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
     const { useState, useEffect, useRef } = React;
@@ -95,13 +95,13 @@
     // 1. Firebase 初始化
     // ==========================================
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-  apiKey: "AIzaSyDmt430oA0Opg8SbXBBb-HHR6KcztMU6Qc",
-  authDomain: "land-dev-dashboard.firebaseapp.com",
-  projectId: "land-dev-dashboard",
-  storageBucket: "land-dev-dashboard.firebasestorage.app",
-  messagingSenderId: "264462869739",
-  appId: "1:264462869739:web:ff99412ffb2b85f7fd8aae",
-  measurementId: "G-9CVBLEPBEJ"
+      apiKey: "AIzaSyDmt430oA0Opg8SbXBBb-HHR6KcztMU6Qc",
+      authDomain: "land-dev-dashboard.firebaseapp.com",
+      projectId: "land-dev-dashboard",
+      storageBucket: "land-dev-dashboard.firebasestorage.app",
+      messagingSenderId: "264462869739",
+      appId: "1:264462869739:web:ff99412ffb2b85f7fd8aae",
+      measurementId: "G-9CVBLEPBEJ"
     };
 
     const app = initializeApp(firebaseConfig);
@@ -117,7 +117,12 @@
     ];
 
     function App() {
+      // 帳號登入狀態
       const [user, setUser] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [loginEmail, setLoginEmail] = useState("");
+      const [loginPass, setLoginPass] = useState("");
+
       const [projects, setProjects] = useState([]);
       const [projectTypes, setProjectTypes] = useState([]);
       const [pendingUpdates, setPendingUpdates] = useState([]);
@@ -135,24 +140,35 @@
       const [formData, setFormData] = useState({});
       const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
       const [confirmDelete, setConfirmDelete] = useState(false);
+      const [confirmDeleteProject, setConfirmDeleteProject] = useState(false); // 新增案件刪除防呆
+      const [confirmDeleteType, setConfirmDeleteType] = useState(false); // 新增類型刪除防呆
       const [historyFormData, setHistoryFormData] = useState({});
       const [isTypeModalOpen, setIsTypeModalOpen] = useState(false);
       const [settingsView, setSettingsView] = useState('list');
       const [editingTypeIndex, setEditingTypeIndex] = useState(-1);
       const [newTypeData, setNewTypeData] = useState({ name: '', phases: [''] });
 
-      // Firebase 登入與資料監聽
+      // Firebase 登入狀態監聽
       useEffect(() => {
-        const initAuth = async () => {
-          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } else {
-            await signInAnonymously(auth);
-          }
-        };
-        initAuth();
-        return onAuthStateChanged(auth, setUser);
+        const unsubscribe = onAuthStateChanged(auth, (u) => {
+          setUser(u);
+          setLoading(false);
+        });
+        return () => unsubscribe();
       }, []);
+
+      // 登入處理
+      const handleLogin = async (e) => {
+        e.preventDefault();
+        try {
+          await signInWithEmailAndPassword(auth, loginEmail, loginPass);
+        } catch (err) {
+          alert("登入失敗：請確認帳號密碼是否正確。");
+        }
+      };
+
+      // 登出處理
+      const handleLogout = () => signOut(auth);
 
       useEffect(() => {
         if (!user) return;
@@ -412,7 +428,40 @@
         
         setSettingsView('list');
         setNewTypeData({ name: '', phases: [''] });
+        setConfirmDeleteType(false); // 關閉時重置防呆
       };
+
+      if (loading) return <div className="min-h-screen flex items-center justify-center font-bold text-slate-400">連線中...</div>;
+
+      // 未登入畫面
+      if (!user) {
+        return (
+          <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
+            <form onSubmit={handleLogin} className="bg-white p-8 md:p-12 rounded-[40px] shadow-2xl w-full max-w-md border border-slate-200">
+              <div className="flex justify-center mb-8">
+                <div className="bg-blue-600 p-4 rounded-3xl shadow-lg shadow-blue-200">
+                  <Icon name="briefcase" size={40} className="text-white" />
+                </div>
+              </div>
+              <h2 className="text-3xl font-black mb-2 text-center text-slate-800 tracking-tight">土地開發管理系統</h2>
+              <p className="text-slate-400 text-center mb-10 font-bold">請輸入您的專屬帳號以同步進度</p>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-black text-slate-400 uppercase mb-2 ml-1">電子郵件</label>
+                  <input type="email" required className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none transition-all font-bold" placeholder="your@email.com" onChange={e=>setLoginEmail(e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs font-black text-slate-400 uppercase mb-2 ml-1">登入密碼</label>
+                  <input type="password" required className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none transition-all font-bold" placeholder="••••••••" onChange={e=>setLoginPass(e.target.value)} />
+                </div>
+              </div>
+              
+              <button type="submit" className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black shadow-xl shadow-blue-100 hover:bg-blue-700 transition-all mt-10 active:scale-95">進入管理系統</button>
+            </form>
+          </div>
+        );
+      }
 
       return (
         <div className="min-h-screen pb-12 w-full bg-slate-50">
@@ -425,10 +474,17 @@
               </div>
               <div className="flex items-center gap-3 md:gap-4">
                 
-                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list');}} className="hidden sm:flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm">
+                {/* 新增的登出與使用者狀態 */}
+                <div className="hidden lg:flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
+                  <Icon name="user" className="w-4 h-4 text-slate-400" />
+                  <span className="text-xs font-bold text-slate-500">{user.email}</span>
+                  <button onClick={handleLogout} className="ml-2 text-[10px] bg-white border border-red-100 px-2 py-0.5 rounded-lg text-red-500 font-black hover:bg-red-50 transition-colors uppercase">登出</button>
+                </div>
+
+                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list'); setConfirmDeleteType(false);}} className="hidden sm:flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm">
                   <Icon name="settings" className="w-5 h-5" /> 系統設定
                 </button>
-                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list');}} className="sm:hidden p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 active:scale-95 transition-transform shadow-sm">
+                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list'); setConfirmDeleteType(false);}} className="sm:hidden p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 active:scale-95 transition-transform shadow-sm">
                   <Icon name="settings" className="w-5 h-5" />
                 </button>
 
@@ -531,7 +587,7 @@
                           const isStalled = !p.isArchived && getDaysSinceUpdate(p.lastUpdate) > STALLED_THRESHOLD;
                           const recentHistory = p.history?.[0] || null;
                           return (
-                            <tr key={p.id} onClick={() => { setSelectedId(p.id); setCurrentView('detail'); window.scrollTo(0,0); }} className="hover:bg-slate-50 cursor-pointer group transition-colors">
+                            <tr key={p.id} onClick={() => { setSelectedId(p.id); setCurrentView('detail'); setConfirmDeleteProject(false); window.scrollTo(0,0); }} className="hover:bg-slate-50 cursor-pointer group transition-colors">
                               <td className="px-6 py-6 text-center text-slate-400 font-bold text-base relative">
                                 {isStalled && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-500 rounded-r-md"></div>}
                                 {i+1}
@@ -627,27 +683,47 @@
                     <div className="w-full px-4 md:px-8">
                       
                       <div className="sticky top-16 sm:top-20 z-30 pt-6 pb-4 bg-slate-50 bg-opacity-95 backdrop-blur-sm border-b border-slate-200/50 transition-all w-full">
-                        <div className="flex items-center justify-between mb-4">
-                          <button onClick={() => {setCurrentView('dashboard'); setSelectedId(null);}} className="flex items-center gap-1.5 text-slate-500 font-bold text-sm md:text-base hover:text-slate-800 transition-colors">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                          <button onClick={() => {setCurrentView('dashboard'); setSelectedId(null); setConfirmDeleteProject(false);}} className="flex items-center gap-1.5 text-slate-500 font-bold text-sm md:text-base hover:text-slate-800 transition-colors w-max">
                             <Icon name="arrow-left" className="w-4 h-4 md:w-5 md:h-5" /> 返回總表
                           </button>
-                          <div className="flex gap-3">
-                            <button onClick={toggleArchive} className={`px-4 py-2 bg-white border-2 rounded-lg text-sm font-bold shadow-sm transition-colors ${selectedProject.isArchived ? 'border-emerald-500 text-emerald-600' : 'border-slate-300 text-slate-500'}`}>
+                          
+                          {/* 案件管理按鈕區塊 - 包含新增的刪除功能 */}
+                          <div className="flex flex-wrap gap-2 sm:gap-3 justify-start sm:justify-end w-full sm:w-auto">
+                            {confirmDeleteProject ? (
+                               <div className="flex items-center gap-2">
+                                 <span className="text-sm font-bold text-red-600 hidden sm:inline mr-1">確認刪除此案件？</span>
+                                 <button onClick={async () => {
+                                   if (!user) return;
+                                   await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', selectedProject.id.toString()));
+                                   setCurrentView('dashboard');
+                                   setSelectedId(null);
+                                   setConfirmDeleteProject(false);
+                                 }} className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-bold shadow-sm hover:bg-red-700 transition-colors">確認刪除</button>
+                                 <button onClick={() => setConfirmDeleteProject(false)} className="px-4 py-2 bg-white border border-slate-300 text-slate-600 rounded-lg text-sm font-bold hover:bg-slate-50 transition-colors">取消</button>
+                               </div>
+                            ) : (
+                               <button onClick={() => setConfirmDeleteProject(true)} className="px-4 py-2 bg-white border border-red-200 text-red-600 rounded-lg text-sm font-bold shadow-sm flex items-center gap-1.5 hover:bg-red-50 transition-colors">
+                                 <Icon name="trash-2" className="w-4 h-4" /> <span className="hidden sm:inline">刪除案件</span>
+                               </button>
+                            )}
+
+                            <button onClick={toggleArchive} className={`px-4 py-2 bg-white border rounded-lg text-sm font-bold shadow-sm transition-colors ${selectedProject.isArchived ? 'border-emerald-500 text-emerald-600 hover:bg-emerald-50' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
                               {selectedProject.isArchived ? '恢復列管' : '解除列管'}
                             </button>
-                            <button onClick={openEditModal} className="px-4 py-2 bg-white border-2 border-amber-500 text-amber-600 rounded-lg text-sm font-bold shadow-sm flex items-center gap-2 hover:bg-amber-50">
+                            <button onClick={openEditModal} className="px-4 py-2 bg-white border border-amber-500 text-amber-600 rounded-lg text-sm font-bold shadow-sm flex items-center gap-2 hover:bg-amber-50 transition-colors">
                               <Icon name="pencil" className="w-4 h-4" /> 編輯專案
                             </button>
                           </div>
                         </div>
 
                         {selectedProject.isArchived && (
-                          <div className="bg-slate-200/70 text-slate-600 px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 border border-slate-300 mb-4 shadow-sm">
+                          <div className="bg-slate-200/70 text-slate-600 px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 border border-slate-300 mt-4 mb-4 shadow-sm">
                             <Icon name="archive" className="w-5 h-5" /> 此案件目前已解除列管，不計入總表統計中。
                           </div>
                         )}
 
-                        <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm flex flex-col xl:flex-row justify-between items-start xl:items-center gap-8">
+                        <div className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm flex flex-col xl:flex-row justify-between items-start xl:items-center gap-8 mt-4">
                           <div className="space-y-4">
                             <div className="flex items-center gap-4">
                               <span className={`px-3 py-1.5 border rounded-lg text-sm font-black shadow-sm ${getTypeColor(selectedProject.type)}`}>{selectedProject.type}</span>
@@ -857,13 +933,13 @@
             </div>
           )}
 
-          {/* 表單 Modal - 系統設定 */}
+          {/* 表單 Modal - 系統設定 (新增刪除類型功能) */}
           {isTypeModalOpen && (
             <div className="fixed inset-0 bg-slate-900/60 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-sm">
               <div className="bg-white w-full max-w-2xl rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85vh] border-0 sm:border-2 sm:border-slate-200 animate-in slide-in-from-bottom-4 duration-200">
                 <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 sm:rounded-t-2xl">
                   <span className="font-black text-slate-800 text-lg flex items-center gap-2"><Icon name="settings" className="w-5 h-5 text-slate-600" /> 系統設定</span>
-                  <button onClick={()=>setIsTypeModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button>
+                  <button onClick={()=>{setIsTypeModalOpen(false); setConfirmDeleteType(false);}} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button>
                 </div>
                 <div className="p-6 overflow-y-auto no-scrollbar space-y-8 flex-1">
                   
@@ -881,7 +957,7 @@
                       
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         {projectTypes.map((type, idx) => (
-                          <div key={idx} onClick={() => { setEditingTypeIndex(idx); setNewTypeData(JSON.parse(JSON.stringify(type))); setSettingsView('edit'); }} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-blue-400 hover:shadow-md transition-all group">
+                          <div key={idx} onClick={() => { setEditingTypeIndex(idx); setNewTypeData(JSON.parse(JSON.stringify(type))); setSettingsView('edit'); setConfirmDeleteType(false); }} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-blue-400 hover:shadow-md transition-all group">
                             <div className="flex flex-col gap-1">
                               <span className="font-black text-slate-700 group-hover:text-blue-700">{type.name}</span>
                               <span className="text-xs font-bold text-slate-400">共 {type.phases.length} 個法定程序</span>
@@ -894,7 +970,7 @@
                   ) : (
                     <div className="space-y-4">
                       <div className="flex items-center gap-3 pb-2 border-b border-slate-100">
-                        <button onClick={() => setSettingsView('list')} className="p-1 hover:bg-slate-100 rounded-lg transition-colors"><Icon name="arrow-left" className="w-5 h-5 text-slate-500" /></button>
+                        <button onClick={() => {setSettingsView('list'); setConfirmDeleteType(false);}} className="p-1 hover:bg-slate-100 rounded-lg transition-colors"><Icon name="arrow-left" className="w-5 h-5 text-slate-500" /></button>
                         <Icon name="list-todo" className="w-5 h-5 text-blue-600" />
                         <h4 className="font-black text-slate-800 text-base md:text-lg">{settingsView === 'add' ? '新增案件類型' : `編輯：${projectTypes[editingTypeIndex]?.name}`}</h4>
                       </div>
@@ -919,13 +995,38 @@
                   )}
 
                 </div>
-                <div className="p-5 bg-slate-50 border-t border-slate-100 flex justify-end shrink-0 sm:rounded-b-2xl">
+                
+                {/* 系統設定 Footer (加入刪除類型按鈕) */}
+                <div className="p-5 bg-slate-50 border-t border-slate-100 flex justify-between items-center shrink-0 sm:rounded-b-2xl gap-4">
                   {settingsView === 'list' ? (
-                    <button onClick={()=>setIsTypeModalOpen(false)} className="px-8 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100">關閉設定</button>
+                    <div className="flex justify-end w-full">
+                      <button onClick={()=>setIsTypeModalOpen(false)} className="px-8 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100 transition-colors">關閉設定</button>
+                    </div>
                   ) : (
-                    <div className="flex gap-3 w-full sm:w-auto">
-                      <button onClick={()=>setSettingsView('list')} className="flex-1 sm:flex-none px-6 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100">返回</button>
-                      <button onClick={handleSaveNewType} className="flex-1 sm:flex-none px-8 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700">儲存設定</button>
+                    <div className="flex flex-col sm:flex-row justify-between w-full gap-4">
+                      <div>
+                        {settingsView === 'edit' && (
+                          confirmDeleteType ? (
+                            <div className="flex gap-2">
+                              <button onClick={async () => {
+                                if (!user) return;
+                                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projectTypes', projectTypes[editingTypeIndex].name));
+                                setSettingsView('list');
+                                setConfirmDeleteType(false);
+                              }} className="px-4 py-3 bg-red-600 text-white rounded-lg font-bold text-sm shadow-md hover:bg-red-700 transition-colors">確定刪除</button>
+                              <button onClick={() => setConfirmDeleteType(false)} className="px-4 py-3 bg-white border border-slate-300 text-slate-600 rounded-lg font-bold text-sm shadow-sm hover:bg-slate-50 transition-colors">取消</button>
+                            </div>
+                          ) : (
+                            <button onClick={() => setConfirmDeleteType(true)} className="w-full sm:w-auto px-4 py-3 text-red-600 font-bold text-sm bg-white border border-red-200 rounded-lg shadow-sm hover:bg-red-50 flex items-center justify-center gap-1.5 transition-colors">
+                              <Icon name="trash-2" className="w-4 h-4"/> 刪除類型
+                            </button>
+                          )
+                        )}
+                      </div>
+                      <div className="flex gap-3 w-full sm:w-auto">
+                        <button onClick={()=>{setSettingsView('list'); setConfirmDeleteType(false);}} className="flex-1 sm:flex-none px-6 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100 transition-colors">返回</button>
+                        <button onClick={handleSaveNewType} className="flex-1 sm:flex-none px-8 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700 transition-colors">儲存設定</button>
+                      </div>
                     </div>
                   )}
                 </div>
