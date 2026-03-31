@@ -12,6 +12,12 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 import google.generativeai as genai
 import urllib.parse
 
+# === 升級：新增 Selenium 瀏覽器引擎相關套件 ===
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+
 # ==========================================
 # 0. 系統日誌設定
 # ==========================================
@@ -62,35 +68,60 @@ def normalize_text(text):
     return text.replace('（', '(').replace('）', ')').replace('「', '').replace('」', '').lower()
 
 def fetch_content(url, keywords_list=None):
-    """抓取內容：若是 RSS 則解析清單，若是網頁則抓純文字"""
+    """抓取內容：升級使用 Selenium 處理 JavaScript 動態渲染網頁"""
     try:
-        # 增強瀏覽器偽裝，加入語系與安全標頭，降低被政府 WAF 阻擋的機率
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        }
         if not url.startswith('http'): url = 'https://' + url
-        res = requests.get(url, headers=headers, timeout=20)
-        res.raise_for_status()
         
-        content_type = res.headers.get('Content-Type', '').lower()
-        if 'xml' in content_type or url.endswith('.xml') or url.endswith('.rss') or '<rss' in res.text[:200]:
-            soup = BeautifulSoup(res.content, 'xml')
+        # 簡單區分是否為明確的 RSS 網址 (維持 requests 確保速度)
+        is_rss_url = url.endswith('.xml') or url.endswith('.rss') or 'type=rss' in url.lower() or 'rss' in url.lower()
+        
+        html_content = ""
+        raw_content = b""
+
+        if is_rss_url:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
+            res = requests.get(url, headers=headers, timeout=20)
+            res.raise_for_status()
+            html_content = res.text
+            raw_content = res.content
+        else:
+            # 升級：網頁使用 Selenium 模擬真實瀏覽器渲染 JavaScript
+            logger.info(f"   -> 啟動虛擬瀏覽器引擎渲染網頁: {url}")
+            chrome_options = Options()
+            chrome_options.add_argument("--headless") # 無頭模式，背景執行不彈出視窗
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
             
-            # 放寬 RSS 讀取筆數，從 10 筆提高到 30 筆，避免被洗版漏抓
+            # 自動下載並啟動對應版本的 Chrome Driver
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+            time.sleep(4) # 等待 JavaScript 執行並載入內容
+            
+            html_content = driver.page_source
+            raw_content = driver.page_source.encode('utf-8')
+            driver.quit()
+
+        # 判斷是否為 RSS 格式
+        if is_rss_url or '<rss' in html_content[:500]:
+            soup = BeautifulSoup(raw_content, 'xml')
             items = soup.find_all(['item', 'entry'])[:30]
             rss_text = ""
             for item in items:
                 title = item.find(['title']).text if item.find(['title']) else ""
-                
-                # 讀取 description (摘要/時間) 與 pubDate (發布日)
                 desc_tag = item.find(['description', 'summary', 'content'])
                 desc_str = ""
                 if desc_tag and desc_tag.text:
-                    # 簡單過濾掉可能存在的 HTML 標籤
                     desc_str = BeautifulSoup(desc_tag.text, 'html.parser').get_text(separator=' ', strip=True)[:150]
                 
                 date_tag = item.find(['pubDate', 'published', 'updated'])
@@ -101,22 +132,23 @@ def fetch_content(url, keywords_list=None):
                     item_full_text = normalize_text(f"{title} {desc_str}")
                     has_keyword = any(normalize_text(kw) in item_full_text for kw in keywords_list if kw)
                     if not has_keyword:
-                        continue # 若這則 RSS 完全沒提到關鍵字，直接丟棄
+                        continue 
                 
                 rss_text += f"- [RSS項目] {title} | 日期: {date_str} | 摘要: {desc_str}\n"
             return rss_text
         else:
-            soup = BeautifulSoup(res.content, 'html.parser')
+            # 一般網頁內容解析
+            soup = BeautifulSoup(html_content, 'html.parser')
             for script in soup(["script", "style"]): script.extract()
             text = soup.get_text(separator='\n')
             lines = (line.strip() for line in text.splitlines())
-            clean_text = '\n'.join(chunk for chunk in lines if chunk)[:3000] # 限制單一網頁字數
+            clean_text = '\n'.join(chunk for chunk in lines if chunk)[:3000]
 
             # 本地端嚴格關鍵字過濾
             if keywords_list:
                 has_keyword = any(normalize_text(kw) in normalize_text(clean_text) for kw in keywords_list if kw)
                 if not has_keyword:
-                    return "" # 整個網頁都沒提到關鍵字，當作無更新
+                    return ""
 
             return clean_text
     except Exception as e:
@@ -145,7 +177,7 @@ def fetch_google_news_text(query):
 # 4. 主程式邏輯
 # ==========================================
 def main():
-    logger.info("🚀 啟動查核機器人(獨立回報版)...")
+    logger.info("🚀 啟動查核機器人(獨立回報版+JS引擎)...")
     
     try:
         user_ref = db.collection('artifacts').document(APP_ID).collection('users').document(FIREBASE_UID)
