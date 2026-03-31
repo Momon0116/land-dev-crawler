@@ -3,6 +3,7 @@ import json
 import logging
 import requests
 import re
+import time  # 新增：用於延遲等待的模組
 from datetime import datetime
 from bs4 import BeautifulSoup
 import firebase_admin
@@ -159,6 +160,10 @@ def main():
                             break # 找到進度就跳出該案件的網址迴圈
                     except Exception as e:
                         logger.error(f"   ❌ AI 判讀官網內容時發生錯誤: {e}")
+                    finally:
+                        # 新增防限速延遲機制
+                        logger.info("   ⏳ 避免觸發 API 頻率限制，暫停 15 秒...")
+                        time.sleep(15)
         
         # --- 策略 B：如果官網沒動靜，或是沒設官網，則啟動關鍵字 RSS 廣泛搜尋 ---
         if not found_update:
@@ -186,6 +191,10 @@ def main():
                         source_type = "網路公開資訊/新聞稿"
                 except Exception as e:
                     logger.error(f"   ❌ AI 判讀新聞內容時發生錯誤: {e}")
+                finally:
+                    # 新增防限速延遲機制
+                    logger.info("   ⏳ 避免觸發 API 頻率限制，暫停 15 秒...")
+                    time.sleep(15)
 
         # --- 寫入 Firebase 待審核區 ---
         if found_update:
