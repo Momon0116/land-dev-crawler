@@ -5,13 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>專案進程管理系統</title>
   
-  <!-- 載入環境依賴 -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- 使用穩定版本的 React -->
   <script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- 載入 Lucide 核心庫 -->
   <script src="https://unpkg.com/lucide@latest"></script>
 
   <style>
@@ -19,7 +16,6 @@
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .table-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     
-    /* 鈴鐺擴散光圈動畫 */
     @keyframes pulse-ring {
       0% { transform: scale(.8); opacity: 0.5; }
       80%, 100% { opacity: 0; }
@@ -42,11 +38,10 @@
   <script type="text/babel" data-type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
     import { getAuth, signInWithEmailAndPassword, signInWithCustomToken, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
-    import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+    import { getFirestore, collection, doc, setDoc, onSnapshot, deleteDoc, addDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
     const { useState, useEffect, useRef } = React;
 
-    // === 自定義 Icon 元件 ===
     const Icon = ({ name, size = 20, className = "" }) => {
       const iconName = name.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join('');
       const iconData = window.lucide?.icons[iconName];
@@ -70,25 +65,10 @@
       }
       
       return (
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width={size}
-          height={size}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={className}
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+        <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} dangerouslySetInnerHTML={{ __html: html }} />
       );
     };
 
-    // ==========================================
-    // 1. Firebase 雲端資料庫初始化設定
-    // ==========================================
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
       apiKey: "AIzaSyDmt430oA0Opg8SbXBBb-HHR6KcztMU6Qc",
       authDomain: "land-dev-dashboard.firebaseapp.com",
@@ -104,7 +84,6 @@
     const db = getFirestore(app);
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'land-dev-app';
 
-    // --- 預設初始化資料 ---
     const INITIAL_TYPES = [
       { name: '重劃案件', phases: ["成立籌備會", "第一次會員大會", "重劃會章程", "成立重劃會", "核定開發計畫書", "核定重劃範圍", "核定重劃計畫書", "公告重劃計畫書", "核定工程預算書圖", "禁止土地移轉、分割及設定負擔公告", "評定重劃前後地價", "核定計算負擔總計表", "土地分配公告", "地籍整理及權利變更登記", "交接土地", "公共設施點交接管", "重劃完成", "公共設施保固期", "財務結算", "成果報告"] },
       { name: '區段徵收', phases: ["報核範圍", "准予徵收", "協議價購", "公告徵收", "補償發放"] },
@@ -113,7 +92,6 @@
     ];
 
     function App() {
-      // 帳號登入狀態
       const [user, setUser] = useState(null);
       const [loading, setLoading] = useState(true);
       const [loginEmail, setLoginEmail] = useState("");
@@ -121,16 +99,20 @@
 
       const [projects, setProjects] = useState([]);
       const [projectTypes, setProjectTypes] = useState([]);
-      const [isDbLoaded, setIsDbLoaded] = useState(false);
+      const [commonSources, setCommonSources] = useState([]); 
+      const [reports, setReports] = useState([]);
+      
       const [pendingUpdates, setPendingUpdates] = useState([]);
       const [isInboxOpen, setIsInboxOpen] = useState(false);
+      const [isReportsModalOpen, setIsReportsModalOpen] = useState(false);
+      const [selectedReport, setSelectedReport] = useState(null);
+
       const [currentView, setCurrentView] = useState('dashboard');
       const [selectedId, setSelectedId] = useState(null);
       const [showArchived, setShowArchived] = useState(false); 
       const [activeFilter, setActiveFilter] = useState({ type: 'all', value: null });
       const [searchQuery, setSearchQuery] = useState('');
 
-      // Modal 狀態
       const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
       const [modalMode, setModalMode] = useState('add'); 
       const [formData, setFormData] = useState({});
@@ -141,10 +123,10 @@
       const [historyFormData, setHistoryFormData] = useState({});
       const [isTypeModalOpen, setIsTypeModalOpen] = useState(false);
       const [settingsView, setSettingsView] = useState('list');
+      const [settingsTab, setSettingsTab] = useState('types'); 
       const [editingTypeIndex, setEditingTypeIndex] = useState(-1);
       const [newTypeData, setNewTypeData] = useState({ name: '', phases: [''] });
 
-      // 1. Firebase 驗證 (強制登入機制，取消自動放行)
       useEffect(() => {
         const initAuth = async () => {
           try {
@@ -163,23 +145,18 @@
 
       const handleLogin = async (e) => {
         e.preventDefault();
-        try {
-          await signInWithEmailAndPassword(auth, loginEmail, loginPass);
-        } catch (err) {
-          alert("登入失敗：請確認帳號密碼是否正確。");
-        }
+        try { await signInWithEmailAndPassword(auth, loginEmail, loginPass); } 
+        catch (err) { alert("登入失敗：請確認帳號密碼是否正確。"); }
       };
 
       const handleLogout = () => signOut(auth);
 
-      // 2. 監聽 Firestore 資料
       useEffect(() => {
         if (!user || !db) return;
         const userPath = ['artifacts', appId, 'users', user.uid];
         
         const unsubProjects = onSnapshot(collection(db, ...userPath, 'projects'), (snapshot) => {
           setProjects(snapshot.docs.map(doc => doc.data()));
-          setIsDbLoaded(true);
         }, (error) => console.error("讀取專案失敗:", error));
 
         const unsubTypes = onSnapshot(collection(db, ...userPath, 'projectTypes'), (snapshot) => {
@@ -195,12 +172,20 @@
           setPendingUpdates(updates.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0)));
         }, (error) => console.error("讀取待審核失敗:", error));
 
-        return () => { unsubProjects(); unsubTypes(); unsubPending(); };
+        const unsubCommonSources = onSnapshot(collection(db, ...userPath, 'commonSources'), (snapshot) => {
+          setCommonSources(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        }, (error) => console.error("讀取常用來源失敗:", error));
+
+        const unsubReports = onSnapshot(collection(db, ...userPath, 'crawler_reports'), (snapshot) => {
+          const reps = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setReports(reps.sort((a, b) => (b.timestamp?.toMillis?.() || 0) - (a.timestamp?.toMillis?.() || 0)));
+        }, (error) => console.error("讀取查核報告失敗:", error));
+
+        return () => { unsubProjects(); unsubTypes(); unsubPending(); unsubCommonSources(); unsubReports(); };
       }, [user]);
 
       const selectedProject = projects.find(p => p.id === selectedId) || null;
 
-      // --- 公用邏輯函式 ---
       const parseTWDate = (twDateStr) => {
         if (!twDateStr) return 0;
         const parts = twDateStr.split(/[./-]/);
@@ -224,13 +209,9 @@
       };
 
       const getCityColor = (city) => {
-        if (!city) return 'bg-slate-50 text-slate-500 border-slate-200';
-        if (city.includes('新竹市')) return 'bg-cyan-50 text-cyan-700 border-cyan-200';
-        if (city.includes('新竹縣')) return 'bg-teal-50 text-teal-700 border-teal-200';
-        return 'bg-slate-50 text-slate-700 border-slate-200';
+        return 'bg-slate-100 text-slate-600 border-slate-200';
       };
 
-      // --- Modal 操作 ---
       const handleSaveProject = async () => {
         if (!user) return;
         const typeDef = projectTypes.find(t => t.name === formData.type);
@@ -247,34 +228,37 @@
           if (selectedProject?.type !== formData.type) newPhaseIndex = hasPhases ? 0 : -1;
           projectData.currentPhaseIndex = newPhaseIndex;
         }
-        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', projId.toString()), projectData);
+        const cleanData = JSON.parse(JSON.stringify(projectData));
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', projId.toString()), cleanData);
         setIsProjectModalOpen(false);
       };
 
       const handleSaveHistory = async () => {
-        if (!historyFormData.date || !historyFormData.note || !user) return;
+        if (!historyFormData.date || !user) return;
         let updatedProject = { ...selectedProject };
         const typeDef = projectTypes.find(t => t.name === updatedProject.type);
         const hasPhases = typeDef && typeDef.phases && typeDef.phases.length > 0;
 
         if (historyFormData.mode === 'add') {
-          const newItem = { id: Date.now().toString(), date: historyFormData.date, note: historyFormData.note, source: historyFormData.source, sourceUrl: historyFormData.sourceUrl, phaseIndex: parseInt(historyFormData.belongToPhase), status: historyFormData.status || updatedProject.status };
+          const newItem = { id: Date.now().toString(), date: historyFormData.date, note: historyFormData.note || '', source: historyFormData.source || '', sourceUrl: historyFormData.sourceUrl || '', phaseIndex: parseInt(historyFormData.belongToPhase) || -1, status: historyFormData.status || updatedProject.status || '系統列管中' };
           updatedProject.history = [newItem, ...(updatedProject.history || [])];
           
           if (hasPhases && historyFormData.updatePhase) {
-            const parsedPhaseIndex = parseInt(historyFormData.newPhaseIndex);
+            const parsedPhaseIndex = parseInt(historyFormData.newPhaseIndex) || 0;
             updatedProject.currentPhaseIndex = parsedPhaseIndex;
             if (typeDef.phases[parsedPhaseIndex]) {
               updatedProject.phaseDates = { ...updatedProject.phaseDates, [typeDef.phases[parsedPhaseIndex]]: historyFormData.date };
             }
           }
         } else {
-          updatedProject.history = (updatedProject.history || []).map(h => h.id === historyFormData.id ? { ...h, date: historyFormData.date, note: historyFormData.note, source: historyFormData.source, sourceUrl: historyFormData.sourceUrl, phaseIndex: parseInt(historyFormData.belongToPhase), status: historyFormData.status || h.status } : h);
+          updatedProject.history = (updatedProject.history || []).map(h => h.id === historyFormData.id ? { ...h, date: historyFormData.date, note: historyFormData.note || '', source: historyFormData.source || '', sourceUrl: historyFormData.sourceUrl || '', phaseIndex: parseInt(historyFormData.belongToPhase) || -1, status: historyFormData.status || h.status || '系統列管中' } : h);
         }
         updatedProject.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date));
         updatedProject.status = updatedProject.history[0]?.status || updatedProject.status;
         updatedProject.lastUpdate = updatedProject.history[0]?.date.replace(/\./g, '/') || updatedProject.lastUpdate;
-        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString()), updatedProject);
+        
+        const cleanData = JSON.parse(JSON.stringify(updatedProject));
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString()), cleanData);
         setIsHistoryModalOpen(false);
       };
 
@@ -293,9 +277,20 @@
           updatedProject.status = updatedProject.history[0]?.status || updatedProject.status;
           updatedProject.lastUpdate = updatedProject.history[0]?.date.replace(/\./g, '/') || updatedProject.lastUpdate;
         }
-        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString()), updatedProject);
+        const cleanData = JSON.parse(JSON.stringify(updatedProject));
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString()), cleanData);
         setIsHistoryModalOpen(false);
         setConfirmDelete(false);
+      };
+
+      const handleAddCommonSource = async (name, url) => {
+        if (!user || !name || !url) return;
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'commonSources'), { name, url });
+      };
+
+      const handleDeleteCommonSource = async (id) => {
+        if (!user) return;
+        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'commonSources', id));
       };
 
       const handleSaveNewType = async () => {
@@ -309,16 +304,39 @@
       };
 
       const handleApproveUpdate = async (update) => {
-        if (!user) return;
-        const proj = projects.find(p => p.id === update.projectId);
-        if (!proj) return;
-        const { projectId, projectName, createdAt, ...cleanUpdate } = update;
-        let updatedProj = { ...proj, history: [cleanUpdate, ...(proj.history || [])] };
-        updatedProj.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date));
-        updatedProj.status = updatedProj.history[0]?.status || updatedProj.status;
-        updatedProj.lastUpdate = updatedProj.history[0]?.date.replace(/\./g, '/') || updatedProj.lastUpdate;
-        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', proj.id.toString()), updatedProj);
-        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'pending_updates', update.id));
+        try {
+          if (!user) return;
+          const proj = projects.find(p => String(p.id) === String(update.projectId));
+          if (!proj) return;
+          
+          let cleanNote = update.note || "";
+          if (cleanNote.startsWith("【新聞】")) cleanNote = cleanNote.replace("【新聞】", "").trim();
+          else if (cleanNote.startsWith("【政府資訊】")) cleanNote = cleanNote.replace("【政府資訊】", "").trim();
+          else if (cleanNote.startsWith("【機器人原始抓取資料】")) cleanNote = cleanNote.replace("【機器人原始抓取資料】", "").trim();
+          
+          if (cleanNote.includes("📌 資料來源：")) {
+             cleanNote = cleanNote.split("📌 資料來源：")[0].trim();
+          }
+          
+          const cleanUpdate = {
+             id: update.id,
+             date: update.date,
+             note: cleanNote,
+             source: update.source || "",
+             sourceUrl: update.sourceUrl || "",
+             phaseIndex: -1,
+             status: proj.status || '系統列管中'
+          };
+          
+          let updatedProj = { ...proj, history: [cleanUpdate, ...(proj.history || [])] };
+          updatedProj.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date));
+          updatedProj.status = updatedProj.history[0]?.status || updatedProj.status;
+          updatedProj.lastUpdate = updatedProj.history[0]?.date.replace(/\./g, '/') || updatedProj.lastUpdate;
+          
+          const cleanData = JSON.parse(JSON.stringify(updatedProj));
+          await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', proj.id.toString()), cleanData);
+          await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'pending_updates', update.id));
+        } catch(e) { console.error("確認加入失敗:", e); }
       };
 
       const handleRejectUpdate = async (id) => {
@@ -328,13 +346,18 @@
 
       const openAddModal = () => {
         setModalMode('add');
-        setFormData({ name: '', type: projectTypes[0]?.name || '', city: '', status: '初始建檔', handler: '', handlerPhone: '', agency: '', currentPhaseIndex: 0, keywords: '', govUrl: '' });
+        setFormData({ name: '', type: projectTypes[0]?.name || '', city: '', status: '初始建檔', handler: '', handlerPhone: '', agency: '', currentPhaseIndex: 0, keywords: '', sources: [{ name: '', url: '' }] });
         setIsProjectModalOpen(true);
       };
 
       const openEditModal = () => {
         setModalMode('edit');
-        setFormData({ ...selectedProject });
+        const proj = { ...selectedProject };
+        if (!proj.sources && proj.govUrl) {
+          proj.sources = proj.govUrl.split(/[\s,]+/).filter(u => u.trim() !== '').map(u => ({ name: '', url: u }));
+        }
+        if (!proj.sources || proj.sources.length === 0) proj.sources = [{ name: '', url: '' }];
+        setFormData(proj);
         setIsProjectModalOpen(true);
       };
 
@@ -365,7 +388,6 @@
         setIsHistoryModalOpen(true);
       };
 
-      // --- 統計數據 ---
       const STALLED_THRESHOLD = 180;
       const activeProjects = projects.filter(p => !p.isArchived);
       const dashboardStats = {
@@ -400,12 +422,8 @@
         </div>
       );
 
-      // === 登入檢查畫面 ===
-      if (loading) {
-        return <div className="min-h-screen flex items-center justify-center font-bold text-slate-400">連線中...</div>;
-      }
+      if (loading) { return <div className="min-h-screen flex items-center justify-center font-bold text-slate-400">連線中...</div>; }
 
-      // 登入畫面 
       if (!user) {
         return (
           <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
@@ -417,7 +435,6 @@
               </div>
               <h2 className="text-3xl font-black mb-2 text-center text-slate-800 tracking-tight">專案進程管理系統</h2>
               <p className="text-slate-400 text-center mb-10 font-bold">請輸入您的專屬帳號以登入系統</p>
-              
               <div className="space-y-4">
                 <div>
                   <label className="block text-xs font-black text-slate-400 uppercase mb-2 ml-1">電子郵件</label>
@@ -428,14 +445,12 @@
                   <input type="password" required className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none transition-all font-bold" placeholder="••••••••" onChange={e=>setLoginPass(e.target.value)} />
                 </div>
               </div>
-              
               <button type="submit" className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black shadow-xl shadow-blue-100 hover:bg-blue-700 transition-all mt-10 active:scale-95">進入管理系統</button>
             </form>
           </div>
         );
       }
 
-      // === 以下為系統主要畫面 ===
       return (
         <div className="min-h-screen pb-16 md:pb-12 w-full bg-slate-50 relative">
           <header className="bg-white border-b border-slate-200 sticky top-0 z-40 w-full shadow-sm">
@@ -445,43 +460,31 @@
                 <h1 className="text-xl md:text-2xl font-black tracking-wide text-slate-800">專案進程管理系統</h1>
               </div>
               <div className="flex items-center gap-3 md:gap-4">
-                
-                {/* 登出與使用者狀態 (移除隱藏限制，永遠顯示登出按鈕) */}
                 <div className="flex items-center gap-2 bg-slate-100 px-2 sm:px-3 py-1.5 rounded-xl border border-slate-200">
                   <Icon name="user" className="w-4 h-4 text-slate-400 hidden sm:block" />
                   <span className="text-xs font-bold text-slate-500 hidden sm:block">{user.email}</span>
                   <button onClick={handleLogout} className="sm:ml-2 text-[10px] bg-white border border-red-100 px-2 py-0.5 rounded-lg text-red-500 font-black hover:bg-red-50 transition-colors uppercase">登出</button>
                 </div>
+                
+                <button onClick={() => setIsReportsModalOpen(true)} className="hidden sm:flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm">
+                  <Icon name="clipboard-list" className="w-5 h-5" /> 查核紀錄
+                </button>
+                <button onClick={() => setIsReportsModalOpen(true)} className="sm:hidden p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 active:scale-95 transition-transform shadow-sm">
+                  <Icon name="clipboard-list" className="w-5 h-5" />
+                </button>
 
-                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list'); setConfirmDeleteType(false);}} className="hidden sm:flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm">
+                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list'); setSettingsTab('types'); setConfirmDeleteType(false);}} className="hidden sm:flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm">
                   <Icon name="settings" className="w-5 h-5" /> 系統設定
                 </button>
-                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list'); setConfirmDeleteType(false);}} className="sm:hidden p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 active:scale-95 transition-transform shadow-sm">
+                <button onClick={() => {setIsTypeModalOpen(true); setSettingsView('list'); setSettingsTab('types'); setConfirmDeleteType(false);}} className="sm:hidden p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 active:scale-95 transition-transform shadow-sm">
                   <Icon name="settings" className="w-5 h-5" />
                 </button>
-
-                <button onClick={openAddModal} className="hidden sm:flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg text-sm md:text-base font-bold shadow-md hover:bg-blue-700 transition-colors">
-                  <Icon name="plus" className="w-5 h-5" /> 新增案件
-                </button>
-
+                
                 <div className="relative ml-1">
-                  <button 
-                    onClick={() => setIsInboxOpen(true)} 
-                    className={`p-2.5 md:px-4 md:py-2.5 rounded-lg border shadow-sm relative flex items-center gap-2 transition-all duration-300 ${
-                      pendingUpdates.length > 0 
-                        ? 'bg-amber-100 border-amber-300 text-amber-800 hover:bg-amber-200 ring-2 ring-amber-400 ring-offset-1 bell-pulse' 
-                        : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
+                  <button onClick={() => setIsInboxOpen(true)} className={`p-2.5 md:px-4 md:py-2.5 rounded-lg border shadow-sm relative flex items-center gap-2 transition-all duration-300 ${pendingUpdates.length > 0 ? 'bg-amber-100 border-amber-300 text-amber-800 hover:bg-amber-200 ring-2 ring-amber-400 ring-offset-1 bell-pulse' : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50'}`}>
                     <Icon name="bell" className={`w-5 h-5 md:w-6 md:h-6 ${pendingUpdates.length > 0 ? 'animate-pulse text-amber-600' : 'text-slate-500'}`} />
-                    <span className="hidden md:inline font-bold text-sm">
-                      {pendingUpdates.length > 0 ? '待審核動態' : '無新動態'}
-                    </span>
-                    {pendingUpdates.length > 0 && (
-                      <span className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white text-xs font-black flex items-center justify-center rounded-full border-2 border-white shadow-md animate-bounce">
-                        {pendingUpdates.length}
-                      </span>
-                    )}
+                    <span className="hidden md:inline font-bold text-sm">{pendingUpdates.length > 0 ? '待審核動態' : '無新動態'}</span>
+                    {pendingUpdates.length > 0 && <span className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white text-xs font-black flex items-center justify-center rounded-full border-2 border-white shadow-md animate-bounce">{pendingUpdates.length}</span>}
                   </button>
                 </div>
               </div>
@@ -497,57 +500,61 @@
                   <StatCard label="穩定推進" value={dashboardStats.active} colorText="text-amber-600" iconName="clock" />
                   <StatCard label="停滯警示" value={dashboardStats.stalled} colorText="text-red-600" iconName="alert-circle" />
                 </div>
-                
                 <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="px-6 md:px-8 py-4 border-b border-slate-100 bg-slate-50/80 flex flex-col gap-4">
-                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                      <h2 className="text-xl font-black text-slate-800 flex items-center gap-2">
+                  
+                  {/* === 修正：總表頭部版面完美三列重構 === */}
+                  <div className="px-6 md:px-8 py-5 border-b border-slate-100 bg-slate-50/80 flex flex-col xl:flex-row justify-between items-start xl:items-end gap-6">
+                    
+                    {/* 左側：標題與快速篩選 */}
+                    <div className="flex flex-col gap-4 w-full xl:w-auto overflow-hidden">
+                      <h2 className="text-xl md:text-2xl font-black text-slate-800 flex items-center gap-2">
                         <Icon name="list-todo" className="w-6 h-6 text-blue-600" /> 案件進度總表
                       </h2>
-                      <div className="flex bg-slate-200/60 p-1 rounded-lg self-start sm:self-auto">
-                        <button onClick={() => setShowArchived(false)} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${!showArchived ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>列管中</button>
-                        <button onClick={() => setShowArchived(true)} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${showArchived ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>已解除</button>
+                      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar w-full pt-1">
+                        <span className="text-sm font-bold text-slate-400 shrink-0">快速篩選：</span>
+                        <button onClick={() => setActiveFilter({type: 'all', value: null})} className={`px-4 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'all' ? 'bg-slate-700 text-white border-slate-700 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>全部</button>
+                        {projectTypes.map(t => (
+                           <button key={t.name} onClick={() => setActiveFilter({type: 'projectType', value: t.name})} className={`px-4 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'projectType' && activeFilter.value === t.name ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>{t.name}</button>
+                        ))}
+                        <div className="w-px h-4 bg-slate-300 mx-1 shrink-0"></div>
+                        {[...new Set(projects.map(p => p.city).filter(Boolean))].map(city => (
+                           <button key={city} onClick={() => setActiveFilter({type: 'city', value: city})} className={`px-4 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'city' && activeFilter.value === city ? 'bg-teal-600 text-white border-teal-600 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>{city}</button>
+                        ))}
                       </div>
                     </div>
-                    
-                    <div className="flex flex-col xl:flex-row items-start xl:items-center gap-4 w-full">
-                       <div className="flex items-center gap-2 overflow-x-auto no-scrollbar w-full xl:w-auto pb-1">
-                          <span className="text-sm font-bold text-slate-400 shrink-0">快速篩選：</span>
-                          <button onClick={() => setActiveFilter({type: 'all', value: null})} className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'all' ? 'bg-slate-700 text-white border-slate-700 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>全部</button>
-                          
-                          {projectTypes.map(t => (
-                             <button key={t.name} onClick={() => setActiveFilter({type: 'projectType', value: t.name})} className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'projectType' && activeFilter.value === t.name ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>{t.name}</button>
-                          ))}
-                          
-                          <div className="w-px h-4 bg-slate-300 mx-1 shrink-0"></div>
-                          
-                          {[...new Set(projects.map(p => p.city).filter(Boolean))].map(city => (
-                             <button key={city} onClick={() => setActiveFilter({type: 'city', value: city})} className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${activeFilter.type === 'city' && activeFilter.value === city ? 'bg-teal-600 text-white border-teal-600 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}>{city}</button>
-                          ))}
-                       </div>
-                       
-                       <div className="relative w-full xl:w-72 xl:ml-auto shrink-0">
-                          <Icon name="search" className="w-4 h-4 md:w-5 md:h-5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                          <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-sm font-medium outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100" placeholder="搜尋案名、狀態、摘要..." />
-                       </div>
+
+                    {/* 右側：按鈕群與長版搜尋框 (等長對齊) */}
+                    <div className="flex flex-col gap-3 w-full xl:w-auto shrink-0">
+                      <div className="flex items-center justify-end gap-3 w-full">
+                        <div className="flex bg-slate-200/60 p-1 rounded-xl">
+                          <button onClick={() => setShowArchived(false)} className={`px-5 py-2.5 rounded-lg text-sm md:text-base font-bold transition-all whitespace-nowrap w-fit ${!showArchived ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>列管中</button>
+                          <button onClick={() => setShowArchived(true)} className={`px-5 py-2.5 rounded-lg text-sm md:text-base font-bold transition-all whitespace-nowrap w-fit ${showArchived ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>已解除</button>
+                        </div>
+                        <button onClick={openAddModal} className="hidden sm:flex items-center justify-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-xl text-sm md:text-base font-bold shadow-md hover:bg-blue-700 transition-colors whitespace-nowrap w-fit">
+                          <Icon name="plus" className="w-5 h-5" /> 新增案件
+                        </button>
+                      </div>
+                      <div className="relative w-full mt-1">
+                        <Icon name="search" className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-3 border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-shadow" placeholder="搜尋案名、狀態、摘要..." />
+                      </div>
                     </div>
                   </div>
+                  {/* ======================================= */}
 
-                  {/* 🚀 手機版獨立卡片佈局 */}
                   <div className="md:hidden flex flex-col gap-3 p-4 bg-slate-50">
-                    {displayedProjects.length === 0 ? (
-                      <div className="text-center py-10 text-slate-400 font-bold text-sm">沒有符合條件的資料</div>
-                    ) : displayedProjects.map((p, i) => {
+                    {displayedProjects.length === 0 ? <div className="text-center py-10 text-slate-400 font-bold text-sm">沒有符合條件的資料</div> : displayedProjects.map((p, i) => {
                       const isStalled = !p.isArchived && getDaysSinceUpdate(p.lastUpdate) > STALLED_THRESHOLD;
                       const recentHistory = p.history?.[0] || null;
                       return (
                         <div key={p.id} onClick={() => { setSelectedId(p.id); setCurrentView('detail'); setConfirmDeleteProject(false); window.scrollTo(0,0); }} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm relative overflow-hidden active:scale-[0.98] transition-transform">
                           {isStalled && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-500"></div>}
                           <div className="flex justify-between items-start mb-2 pl-1">
-                            <div className="flex flex-wrap gap-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               <span className={`px-2.5 py-1 text-[10px] font-bold rounded-md border shadow-sm ${getCityColor(p.city)}`}>{p.city}</span>
+                              <span className="text-slate-300 font-black px-0.5">|</span>
                               <span className={`px-2.5 py-1 text-[10px] font-bold rounded-md border shadow-sm ${getTypeColor(p.type)}`}>{p.type}</span>
-                              {isStalled && <span className="px-2.5 py-1 text-[10px] font-bold rounded-md border shadow-sm bg-red-50 text-red-600 border-red-200">停滯警示</span>}
+                              {isStalled && <span className="px-2.5 py-1 text-[10px] font-bold rounded-md border shadow-sm bg-red-50 text-red-600 border-red-200 ml-1.5">停滯警示</span>}
                             </div>
                             <span className="text-xs font-black text-slate-300">#{i+1}</span>
                           </div>
@@ -556,31 +563,26 @@
                             <span className="flex items-center gap-1.5"><Icon name="clock" className="w-4 h-4"/> {p.lastUpdate}</span>
                             <span className={`px-2.5 py-1 rounded-lg text-[11px] border ${getStatusColorBadge(p.status)}`}>{p.status}</span>
                           </div>
-                          <div className="text-sm text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100 line-clamp-2 leading-relaxed">
-                            {recentHistory?.note || '無最新動態摘要'}
-                          </div>
+                          <div className="text-sm text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100 whitespace-normal break-words leading-relaxed">{recentHistory?.note || '無最新動態摘要'}</div>
                         </div>
                       );
                     })}
                   </div>
-
-                  {/* 🖥️ 電腦版表格佈局 */}
                   <div className="hidden md:block table-scroll no-scrollbar overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                       <thead>
+                        {/* === 修正：調整表格欄位寬度比例，讓摘要更寬 === */}
                         <tr className="bg-white text-slate-500 text-sm font-black border-b border-slate-200 uppercase tracking-widest">
-                          <th className="px-6 py-5 text-center w-20">項次</th>
-                          <th className="px-6 py-5 min-w-[280px]">案名與類型</th>
-                          <th className="px-6 py-5 w-48">最新更新日期</th>
-                          <th className="px-6 py-5 w-48">目前狀態</th>
-                          <th className="px-6 py-5">最新動態摘要</th>
-                          <th className="px-6 py-5 text-center w-24">操作</th>
+                          <th className="px-6 py-5 text-center w-16">項次</th>
+                          <th className="px-6 py-5 min-w-[250px] w-1/4">案名與類型</th>
+                          <th className="px-6 py-5 w-32">最新更新日期</th>
+                          <th className="px-6 py-5 w-40">目前狀態</th>
+                          <th className="px-6 py-5 min-w-[300px]">最新動態摘要</th>
+                          <th className="px-6 py-5 text-center w-20">操作</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {displayedProjects.length === 0 ? (
-                          <tr><td colSpan="6" className="text-center py-16 text-slate-400 font-bold text-lg">沒有符合條件的資料</td></tr>
-                        ) : displayedProjects.map((p, i) => {
+                        {displayedProjects.length === 0 ? <tr><td colSpan="6" className="text-center py-16 text-slate-400 font-bold text-lg">沒有符合條件的資料</td></tr> : displayedProjects.map((p, i) => {
                           const isStalled = !p.isArchived && getDaysSinceUpdate(p.lastUpdate) > STALLED_THRESHOLD;
                           const recentHistory = p.history?.[0] || null;
                           return (
@@ -590,18 +592,25 @@
                                 {i+1}
                               </td>
                               <td className="px-6 py-6">
-                                <div className="flex flex-col gap-1.5">
+                                <div className="flex flex-col gap-2">
                                   <span className="font-black text-xl text-blue-800 group-hover:underline">{p.name}</span>
-                                  <div className="flex gap-2">
+                                  <div className="flex items-center gap-1.5">
                                     <span className={`px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm ${getCityColor(p.city)}`}>{p.city}</span>
+                                    <span className="text-slate-300 font-black px-1">|</span>
                                     <span className={`px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm ${getTypeColor(p.type)}`}>{p.type}</span>
-                                    {isStalled && <span className="px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm bg-red-50 text-red-600 border-red-200">停滯警示</span>}
+                                    {isStalled && <span className="px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm bg-red-50 text-red-600 border-red-200 ml-1.5">停滯警示</span>}
                                   </div>
                                 </div>
                               </td>
                               <td className="px-6 py-6 text-base font-black text-slate-600">{p.lastUpdate}</td>
-                              <td className="px-6 py-6"><span className={`px-3.5 py-1.5 border rounded-lg text-base font-bold shadow-sm whitespace-nowrap ${getStatusColorBadge(p.status)}`}>{p.status}</span></td>
-                              <td className="px-6 py-6 text-base text-slate-500 max-w-[350px] truncate">{recentHistory?.note || '-'}</td>
+                              <td className="px-6 py-6"><span className={`px-3.5 py-1.5 border rounded-lg text-sm font-bold shadow-sm whitespace-nowrap ${getStatusColorBadge(p.status)}`}>{p.status}</span></td>
+                              
+                              {/* === 修正：移除 truncate 並加入自動換行 === */}
+                              <td className="px-6 py-6 text-base text-slate-600 leading-relaxed min-w-[300px] whitespace-normal break-words">
+                                {recentHistory?.note || '-'}
+                              </td>
+                              {/* ======================================= */}
+                              
                               <td className="px-6 py-6 text-center text-slate-300 group-hover:text-blue-600">
                                 <Icon name="chevron-right" className="w-5 h-5 md:w-6 md:h-6 mx-auto transition-transform group-hover:translate-x-1" />
                               </td>
@@ -614,63 +623,37 @@
                 </div>
               </div>
             ) : (
-              /* ========================================================================================= */
-              /* 詳細頁面：方案二 (左右雙欄 Side-by-Side Layout) */
-              /* ========================================================================================= */
               selectedProject ? (() => {
                 const typeDef = projectTypes.find(t => t.name === selectedProject.type);
                 const phases = typeDef?.phases || [];
                 const hasPhases = phases.length > 0;
                 const safePhaseIndex = selectedProject.currentPhaseIndex !== undefined ? selectedProject.currentPhaseIndex : -1;
                 const progressPercent = hasPhases ? Math.max(0, Math.round((safePhaseIndex / phases.length) * 100)) : 0;
-                
-                // 全局排序與智能群組邏輯
                 const allEntries = [];
-                (selectedProject.history || []).forEach(log => {
-                   allEntries.push({ type: 'log', log: log, timestamp: parseTWDate(log.date), phaseIdx: log.phaseIndex });
-                });
-                
+                (selectedProject.history || []).forEach(log => { allEntries.push({ type: 'log', log: log, timestamp: parseTWDate(log.date), phaseIdx: log.phaseIndex }); });
                 phases.forEach((p, idx) => {
                    const logsForPhase = (selectedProject.history || []).filter(h => h.phaseIndex === idx);
                    const isPending = idx > safePhaseIndex;
-                   
-                   if (isPending) {
-                     allEntries.push({ type: 'pending-phase', phase: p, idx: idx, timestamp: Infinity }); 
-                   } else if (logsForPhase.length === 0) {
-                     const pDate = selectedProject.phaseDates?.[p];
-                     const ts = pDate ? parseTWDate(pDate) : 0; 
-                     allEntries.push({ type: 'phase-milestone', phase: p, idx: idx, date: pDate, timestamp: ts });
-                   }
+                   if (isPending) { allEntries.push({ type: 'pending-phase', phase: p, idx: idx, timestamp: Infinity }); } 
+                   else if (logsForPhase.length === 0) { const pDate = selectedProject.phaseDates?.[p]; allEntries.push({ type: 'phase-milestone', phase: p, idx: idx, date: pDate, timestamp: pDate ? parseTWDate(pDate) : 0 }); }
                 });
-                
                 allEntries.sort((a, b) => {
                    if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
                    if (a.type === 'pending-phase' && b.type !== 'pending-phase') return 1;
                    if (a.type !== 'pending-phase' && b.type === 'pending-phase') return -1;
-                   if (a.type === 'pending-phase' && b.type === 'pending-phase') return a.idx - b.idx;
-                   return 0; 
+                   return a.idx - b.idx;
                 });
-
                 const groupedEntries = [];
                 let currentGroup = null;
-
                 allEntries.forEach(entry => {
-                   if (entry.type === 'pending-phase') {
-                      if (currentGroup) { groupedEntries.push(currentGroup); currentGroup = null; }
-                      groupedEntries.push(entry);
-                   } else if (entry.type === 'phase-milestone') {
-                      if (currentGroup) { groupedEntries.push(currentGroup); currentGroup = null; }
-                      groupedEntries.push({ type: 'log-group', groupType: `phase-${entry.idx}`, isGeneral: false, phaseIdx: entry.idx, phaseName: entry.phase, logs: [] });
-                   } else {
+                   if (entry.type === 'pending-phase') { if (currentGroup) groupedEntries.push(currentGroup); currentGroup = null; groupedEntries.push(entry); }
+                   else if (entry.type === 'phase-milestone') { if (currentGroup) groupedEntries.push(currentGroup); groupedEntries.push({ type: 'log-group', groupType: `phase-${entry.idx}`, isGeneral: false, phaseIdx: entry.idx, phaseName: entry.phase, logs: [] }); }
+                   else {
                       const pIdx = entry.log.phaseIndex;
                       const isGeneral = (pIdx === -1 || pIdx === undefined);
                       const groupType = isGeneral ? 'general' : `phase-${pIdx}`;
-                      if (!currentGroup || currentGroup.groupType !== groupType) {
-                         if (currentGroup) groupedEntries.push(currentGroup);
-                         currentGroup = { type: 'log-group', groupType, isGeneral, phaseIdx: pIdx, phaseName: isGeneral ? '一般與前期歷程' : (phases[pIdx] || '未知階段'), logs: [entry.log] };
-                      } else {
-                         currentGroup.logs.push(entry.log);
-                      }
+                      if (!currentGroup || currentGroup.groupType !== groupType) { if (currentGroup) groupedEntries.push(currentGroup); currentGroup = { type: 'log-group', groupType, isGeneral, phaseIdx: pIdx, phaseName: isGeneral ? '一般與前期歷程' : (phases[pIdx] || '未知階段'), logs: [entry.log] }; }
+                      else { currentGroup.logs.push(entry.log); }
                    }
                 });
                 if (currentGroup) groupedEntries.push(currentGroup);
@@ -678,78 +661,67 @@
                 return (
                   <div className="w-full animate-in fade-in duration-300 pb-12">
                     <div className="w-full px-4 md:px-8">
-                      
-                      {/* 頂部固定導覽列 */}
                       <div className="sticky top-16 sm:top-20 z-30 pt-6 pb-4 bg-slate-50 bg-opacity-95 backdrop-blur-sm border-b border-slate-200/50 transition-all w-full flex justify-between items-center">
                         <button onClick={() => {setCurrentView('dashboard'); setSelectedId(null); setConfirmDeleteProject(false);}} className="flex items-center gap-1.5 text-slate-500 font-bold text-sm md:text-base hover:text-slate-800 transition-colors w-max">
                           <Icon name="arrow-left" className="w-4 h-4 md:w-5 md:h-5" /> 返回總表
                         </button>
-                        {/* 手機版新增歷程按鈕 (桌面版在右側卡片內) */}
                         <button onClick={openHistoryModal} className="xl:hidden px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold shadow-md hover:bg-blue-700 flex items-center gap-2 transition-colors">
                           <Icon name="plus" className="w-4 h-4" /> 新增歷程
                         </button>
                       </div>
 
-                      {/* 左右雙欄佈局區塊 */}
                       <div className="flex flex-col xl:flex-row gap-6 mt-6 items-start w-full relative">
-                        
-                        {/* 左側：專案固定資訊欄 (約佔 35%) */}
                         <div className="w-full xl:w-[35%] bg-white rounded-2xl border border-slate-200 shadow-sm p-6 md:p-8 xl:sticky xl:top-[110px]">
-                          
-                          {/* 操作按鈕與標籤 */}
                           <div className="flex justify-between items-start mb-6">
-                            <div className="flex flex-wrap gap-2">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                                <span className={`px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm ${getCityColor(selectedProject.city)}`}>{selectedProject.city}</span>
+                               <span className="text-slate-300 font-black px-0.5">|</span>
                                <span className={`px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm ${getTypeColor(selectedProject.type)}`}>{selectedProject.type}</span>
-                               {selectedProject.isArchived && <span className="px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm bg-slate-100 text-slate-600">已解除列管</span>}
+                               {selectedProject.isArchived && <span className="px-2.5 py-1 text-xs font-bold rounded-md border shadow-sm bg-slate-100 text-slate-600 ml-1.5">已解除列管</span>}
                             </div>
                             <div className="flex gap-2">
                               {confirmDeleteProject ? (
                                  <div className="flex gap-1 animate-in fade-in">
-                                   <button onClick={async () => {
-                                     if (!user) return;
-                                     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', selectedProject.id.toString()));
-                                     setCurrentView('dashboard');
-                                     setSelectedId(null);
-                                     setConfirmDeleteProject(false);
-                                   }} className="px-2.5 py-1 bg-red-600 text-white rounded text-xs font-bold whitespace-nowrap">確認刪除</button>
+                                   <button onClick={async () => { if (!user) return; await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', selectedProject.id.toString())); setCurrentView('dashboard'); setSelectedId(null); setConfirmDeleteProject(false); }} className="px-2.5 py-1 bg-red-600 text-white rounded text-xs font-bold whitespace-nowrap">確認刪除</button>
                                    <button onClick={() => setConfirmDeleteProject(false)} className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded text-xs font-bold whitespace-nowrap">取消</button>
                                  </div>
                               ) : (
                                  <>
                                    <button onClick={() => setConfirmDeleteProject(true)} className="p-1.5 bg-white border border-red-200 text-red-500 rounded-lg hover:bg-red-50 transition-colors" title="刪除案件"><Icon name="trash-2" className="w-4 h-4" /></button>
                                    <button onClick={openEditModal} className="p-1.5 bg-white border border-amber-500 text-amber-600 rounded-lg hover:bg-amber-50 transition-colors" title="編輯案件"><Icon name="pencil" className="w-4 h-4" /></button>
-                                   <button onClick={toggleArchive} className={`p-1.5 bg-white border rounded-lg transition-colors ${selectedProject.isArchived ? 'border-emerald-500 text-emerald-600 hover:bg-emerald-50' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`} title={selectedProject.isArchived ? '恢復列管' : '解除列管'}>
-                                     <Icon name="archive" className="w-4 h-4" />
-                                   </button>
+                                   <button onClick={toggleArchive} className={`p-1.5 bg-white border rounded-lg transition-colors ${selectedProject.isArchived ? 'border-emerald-500 text-emerald-600 hover:bg-emerald-50' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`} title={selectedProject.isArchived ? '恢復列管' : '解除列管'}><Icon name="archive" className="w-4 h-4" /></button>
                                  </>
                               )}
                             </div>
                           </div>
-
                           <h2 className="text-3xl font-black text-slate-800 mb-6 leading-tight">{selectedProject.name}</h2>
-
-                          {/* 狀態與更新日期 (目前狀態靠左，最後更新靠右) */}
-                          <div className="flex flex-wrap sm:flex-nowrap justify-between items-center gap-4 mb-6 pb-6 border-b border-slate-100">
-                            <div className="flex items-center gap-2 text-slate-500 font-bold">
-                              目前狀態：<span className={`px-2.5 py-1 rounded-lg text-xs border ${getStatusColorBadge(selectedProject.status)}`}>{selectedProject.status}</span>
-                            </div>
-                            <div className="flex items-center gap-2 text-slate-500 font-bold shrink-0">
-                              <Icon name="clock" className="w-4 h-4 shrink-0"/> 最後更新：<span className="text-slate-800">{selectedProject.lastUpdate}</span>
-                            </div>
+                          
+                          {/* === 修正：左側資訊欄使用兩欄 Grid 排版，確保承辦對齊最後更新 === */}
+                          <div className="grid grid-cols-1 sm:grid-cols-[55%_45%] gap-y-4 mb-6 pb-6 border-b border-slate-100 text-sm">
+                             <div className="flex items-center pr-2 whitespace-nowrap overflow-hidden">
+                                <span className="text-slate-500 font-bold mr-2 shrink-0">目前狀態：</span>
+                                <span className={`px-2.5 py-1 rounded-lg text-xs border font-bold shadow-sm truncate ${getStatusColorBadge(selectedProject.status)}`}>{selectedProject.status}</span>
+                             </div>
+                             <div className="flex items-center pl-2 whitespace-nowrap overflow-hidden">
+                                <span className="text-slate-500 font-bold mr-2 shrink-0">最後更新：</span>
+                                <span className="text-slate-800 font-black flex items-center gap-1.5 truncate"><Icon name="clock" className="w-4 h-4 shrink-0 text-slate-400"/> {selectedProject.lastUpdate}</span>
+                             </div>
+                             <div className="flex items-center pr-2 whitespace-nowrap overflow-hidden">
+                                <span className="text-slate-500 font-bold mr-2 shrink-0">主辦機關：</span>
+                                <span className="text-slate-800 font-bold truncate" title={selectedProject.agency}>{selectedProject.agency || '-'}</span>
+                             </div>
+                             <div className="flex items-center pl-2 whitespace-nowrap overflow-hidden">
+                                <span className="text-slate-500 font-bold mr-2 shrink-0">承辦人員：</span>
+                                <span className="text-slate-800 font-bold truncate" title={selectedProject.handler}>{selectedProject.handler || '-'}</span>
+                             </div>
+                             <div className="flex items-center col-span-1 sm:col-span-2 mt-1 whitespace-nowrap overflow-hidden">
+                                <span className="text-slate-500 font-bold mr-2 shrink-0">聯絡電話：</span>
+                                <span className="text-slate-800 font-bold truncate" title={selectedProject.handlerPhone}>{selectedProject.handlerPhone || '-'}</span>
+                             </div>
                           </div>
+                          {/* ========================================================= */}
 
-                          {/* 基本聯絡資訊 (字體放大至 text-base，標籤顏色同步 text-slate-500) */}
-                          <div className="flex flex-col gap-4 text-base mb-6 pb-6 border-b border-slate-100">
-                            <div className="flex items-center w-full"><span className="text-slate-500 font-bold mr-2 shrink-0">機關：</span><span className="text-slate-800 font-black truncate" title={selectedProject.agency}>{selectedProject.agency || '-'}</span></div>
-                            <div className="flex justify-between items-center w-full gap-4">
-                              <div className="flex items-center shrink-0"><span className="text-slate-500 font-bold mr-2 shrink-0">承辦：</span><span className="text-slate-800 font-black truncate max-w-[120px] sm:max-w-xs" title={selectedProject.handler}>{selectedProject.handler || '-'}</span></div>
-                              <div className="flex items-center justify-end shrink-0"><span className="text-slate-500 font-bold mr-2 shrink-0">電話：</span><span className="text-slate-800 font-black truncate text-right max-w-[130px] sm:max-w-xs" title={selectedProject.handlerPhone}>{selectedProject.handlerPhone || '-'}</span></div>
-                            </div>
-                          </div>
-
-                          {/* AI 追蹤設定 */}
-                          {(selectedProject.keywords || selectedProject.govUrl) && (
+                          {(selectedProject.keywords || selectedProject.govUrl || (selectedProject.sources && selectedProject.sources.length > 0)) && (
                             <div className="space-y-3 text-sm">
                               <div className="text-emerald-700 font-black mb-3 flex items-center gap-1.5"><Icon name="bot" className="w-4 h-4"/> AI 精準追蹤設定</div>
                               {selectedProject.keywords && (
@@ -758,15 +730,23 @@
                                    <span className="font-bold leading-relaxed">{selectedProject.keywords}</span>
                                  </div>
                               )}
-                              {selectedProject.govUrl && (
+                              {(selectedProject.sources || selectedProject.govUrl) && (
                                  <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 flex flex-col gap-1.5">
                                    <span className="text-blue-700 font-bold text-xs flex items-center gap-1.5"><Icon name="link" className="w-3.5 h-3.5"/> 追蹤特定來源：</span>
-                                   <div className="flex flex-col gap-2 mt-1">
-                                     {selectedProject.govUrl.split(/[\s,]+/).filter(u => u.trim() !== '').map((url, idx) => (
-                                       <a key={idx} href={url.startsWith('http') ? url : `https://${url}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-800 hover:underline flex items-start gap-1.5 text-[13px] break-all font-medium transition-colors">
-                                         <Icon name="external-link" className="w-3.5 h-3.5 shrink-0 mt-0.5"/> {url}
-                                       </a>
-                                     ))}
+                                   <div className="flex flex-col gap-2.5 mt-1">
+                                     {selectedProject.sources && selectedProject.sources.length > 0 ? (
+                                       selectedProject.sources.map((s, idx) => s.url && (
+                                         <a key={idx} href={s.url.startsWith('http') ? s.url : `https://${s.url}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-800 hover:underline flex items-start gap-1.5 text-[13px] font-medium transition-colors bg-white/60 p-2.5 rounded-lg border border-blue-100 shadow-sm w-full">
+                                           <Icon name="external-link" className="w-4 h-4 shrink-0 mt-0.5"/> <span className="break-all leading-tight">{s.name || s.url}</span>
+                                         </a>
+                                       ))
+                                     ) : selectedProject.govUrl && (
+                                       selectedProject.govUrl.split(/[\s,]+/).filter(u => u.trim() !== '').map((url, idx) => (
+                                         <a key={idx} href={url.startsWith('http') ? url : `https://${url}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-800 hover:underline flex items-start gap-1.5 text-[13px] font-medium transition-colors bg-white/60 p-2.5 rounded-lg border border-blue-100 shadow-sm w-full">
+                                           <Icon name="external-link" className="w-4 h-4 shrink-0 mt-0.5"/> <span className="break-all leading-tight">{url}</span>
+                                         </a>
+                                       ))
+                                     )}
                                    </div>
                                  </div>
                               )}
@@ -774,150 +754,75 @@
                           )}
                         </div>
 
-                        {/* 右側：時間軸與歷史歷程區塊 (約佔 65%) */}
                         <div className="w-full xl:w-[65%] bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-6 md:p-8 border-b border-slate-100 gap-6 bg-slate-50/50">
-                            <h3 className="font-black text-xl md:text-2xl flex items-center gap-2 md:gap-3 text-slate-800">
-                              <Icon name="list-todo" className="w-6 h-6 md:w-7 md:h-7 text-blue-600" /> 
-                              {hasPhases ? '專案進度與歷程' : '專案歷程紀錄'}
-                            </h3>
+                            <h3 className="font-black text-xl md:text-2xl flex items-center gap-2 md:gap-3 text-slate-800"><Icon name="list-todo" className="w-6 h-6 md:w-7 md:h-7 text-blue-600" /> {hasPhases ? '專案進度與歷程' : '專案歷程紀錄'}</h3>
                             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 md:gap-6 w-full sm:w-auto justify-between sm:justify-end">
-                              <button onClick={openHistoryModal} className="hidden xl:flex px-5 py-2 md:py-2.5 bg-blue-600 text-white rounded-lg text-sm md:text-base font-bold shadow-md hover:bg-blue-700 items-center gap-2 transition-colors justify-center">
-                                <Icon name="plus" className="w-5 h-5" /> 新增歷程
-                              </button>
-                              
-                              {hasPhases && (
-                                <>
-                                  <div className="hidden xl:block h-8 w-px bg-slate-200"></div>
-                                  <div className="flex items-center gap-3 w-full sm:w-auto">
-                                    <span className="text-sm md:text-base text-slate-500 font-bold hidden sm:inline whitespace-nowrap">總進度 {progressPercent}%</span>
-                                    <div className="w-full sm:w-40 h-3 md:h-4 bg-slate-200 rounded-full overflow-hidden border border-slate-200">
-                                      <div className="h-full bg-blue-600 rounded-full transition-all duration-1000" style={{width: `${progressPercent}%`}}></div>
-                                    </div>
-                                  </div>
-                                </>
-                              )}
+                              <button onClick={openHistoryModal} className="hidden xl:flex px-5 py-2 md:py-2.5 bg-blue-600 text-white rounded-lg text-sm md:text-base font-bold shadow-md hover:bg-blue-700 items-center gap-2 transition-colors justify-center"><Icon name="plus" className="w-5 h-5" /> 新增歷程</button>
+                              {hasPhases && <div className="flex items-center gap-3 w-full sm:w-auto"><span className="text-sm md:text-base text-slate-500 font-bold hidden sm:inline whitespace-nowrap">總進度 {progressPercent}%</span><div className="w-full sm:w-40 h-3 md:h-4 bg-slate-200 rounded-full overflow-hidden border border-slate-200"><div className="h-full bg-blue-600 rounded-full transition-all duration-1000" style={{width: `${progressPercent}%`}}></div></div></div>}
                             </div>
                           </div>
-                          
                           <div className="p-6 md:p-8 w-full overflow-x-hidden">
                             <div className="relative border-l-2 border-slate-200 ml-4 md:ml-6 space-y-10 md:space-y-12 pb-6 w-full">
-                              
-                              {groupedEntries.length === 0 ? (
-                                 <div className="py-16 text-center text-slate-400 font-bold text-base italic bg-slate-50 rounded-xl w-full border border-dashed border-slate-200">
-                                   本專案尚無任何歷史紀錄
-                                 </div>
-                              ) : groupedEntries.map((group, idx) => {
-                                
+                              {groupedEntries.length === 0 ? <div className="py-16 text-center text-slate-400 font-bold text-base italic bg-slate-50 rounded-xl w-full border border-dashed border-slate-200">本專案尚無任何歷史紀錄</div> : groupedEntries.map((group, idx) => {
                                 if (group.type === 'log-group') {
                                    const isGen = group.isGeneral;
                                    const isCompleted = !isGen && group.phaseIdx < safePhaseIndex;
                                    const isCurrent = !isGen && group.phaseIdx === safePhaseIndex;
                                    const hasLogs = group.logs && group.logs.length > 0;
-                                   const hasAnyDescription = hasLogs && group.logs.some(l => (l.note && l.note.trim() !== '') || (l.source && l.source.trim() !== ''));
-                                   
                                    return (
                                      <div key={`group-${idx}`} className="relative pl-8 md:pl-12 w-full">
-                                        <div className="absolute left-[-13px] md:left-[-15px] top-0 bg-white">
-                                          {isGen && hasPhases ? <Icon name="activity" className="w-6 h-6 md:w-7 md:h-7 text-amber-500" /> : 
-                                           isCompleted ? <Icon name="check-circle" className="w-6 h-6 md:w-7 md:h-7 text-emerald-500" /> :
-                                           isCurrent ? <Icon name="arrow-right-circle" className="w-6 h-6 md:w-7 md:h-7 text-blue-600" /> :
-                                           (!hasPhases ? <div className="w-6 h-6 md:w-7 md:h-7 rounded-full border-2 border-white shadow-sm bg-blue-600 ring-4 ring-blue-50 flex items-center justify-center"><div className="w-2 h-2 bg-white rounded-full"></div></div> : <Icon name="circle-dashed" className="w-6 h-6 md:w-7 md:h-7 text-slate-300" />)}
-                                        </div>
-                                        
+                                        <div className="absolute left-[-13px] md:left-[-15px] top-0 bg-white">{isGen && hasPhases ? <Icon name="activity" className="w-6 h-6 md:w-7 md:h-7 text-amber-500" /> : isCompleted ? <Icon name="check-circle" className="w-6 h-6 md:w-7 md:h-7 text-emerald-500" /> : isCurrent ? <Icon name="arrow-right-circle" className="w-6 h-6 md:w-7 md:h-7 text-blue-600" /> : (!hasPhases ? <div className="w-6 h-6 md:w-7 md:h-7 rounded-full border-2 border-white shadow-sm bg-blue-600 ring-4 ring-blue-50 flex items-center justify-center"><div className="w-2 h-2 bg-white rounded-full"></div></div> : <Icon name="circle-dashed" className="w-6 h-6 md:w-7 md:h-7 text-slate-300" />)}</div>
                                         <div className="flex flex-col gap-4 lg:gap-5 w-full pr-0 md:pr-4 opacity-100">
-                                          {(hasPhases || !isGen) && (
-                                            <div className="w-full shrink-0 flex flex-col gap-1.5 pt-0.5">
-                                              <div className="flex items-start gap-3 text-slate-700">
-                                                <span className={`text-sm md:text-base ${isGen ? 'text-amber-500' : 'text-slate-500'} w-5 text-right font-black shrink-0 mt-0.5`}>
-                                                  {isGen ? '*' : `${group.phaseIdx+1}.`}
-                                                </span>
-                                                <div className="flex flex-col gap-1">
-                                                  <span className={`text-base md:text-xl font-black ${isCurrent ? 'text-blue-700' : 'text-slate-700'}`}>{group.phaseName}</span>
-                                                  {isGen ? (
-                                                    <span className="text-sm md:text-base font-bold text-amber-600">非屬特定法定階段</span>
-                                                  ) : (
-                                                    <div className="flex items-center gap-2">
-                                                      <span className="text-sm md:text-base font-bold text-slate-400">{isCompleted ? '已完成' : (isCurrent ? '進行中' : '')}</span>
-                                                      {(isCompleted || isCurrent) && hasLogs && <span className="text-sm md:text-base text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded">更新至 {group.logs[group.logs.length-1].date}</span>}
-                                                    </div>
-                                                  )}
-                                                </div>
-                                              </div>
-                                            </div>
-                                          )}
-                                          
-                                          {/* 只有在該群組真的有歷程時，才顯示外框與內容 */}
-                                          {hasLogs && (
-                                            <div className="w-full flex-1 mt-1 sm:mt-0">
-                                              <div className={`${isGen && hasPhases ? 'bg-amber-50/40 border-amber-200/60' : 'bg-slate-50 border-slate-200'} rounded-xl p-4 md:p-6 w-full relative shadow-sm`}>
-                                                <div className={`hidden sm:flex text-xs md:text-sm font-bold text-slate-500 mb-4 border-b ${isGen && hasPhases ? 'border-amber-200/80' : 'border-slate-200/80'} pb-3 gap-6 pr-10`}>
-                                                  <div className="w-24 md:w-28 shrink-0">發生日期</div>
-                                                  <div className={hasAnyDescription ? "w-32 md:w-40 shrink-0" : "flex-1"}>案件狀態</div>
-                                                  {hasAnyDescription && <div className="flex-1">歷程說明與來源</div>}
-                                                </div>
-                                                <div className="space-y-0">
-                                                  {group.logs.slice().sort((a,b) => parseTWDate(a.date) - parseTWDate(b.date)).map(l => (
-                                                    <div key={l.id} className={`flex flex-col sm:flex-row sm:items-start border-b ${isGen && hasPhases ? 'border-amber-200/40' : 'border-slate-200/60'} last:border-0 py-4 first:pt-0 last:pb-0 relative pr-0 sm:pr-10 hover:bg-white transition-colors group gap-3 sm:gap-6`}>
-                                                      <div className={`sm:w-24 md:w-28 shrink-0 text-sm md:text-base font-black ${isGen && hasPhases ? 'text-amber-700' : 'text-slate-700'} sm:mt-1.5 flex items-center gap-1.5`}>
-                                                        <span className="sm:hidden text-slate-400"><Icon name="clock" className="w-3.5 h-3.5"/></span>{l.date}
+                                          {(hasPhases || !isGen) && <div className="w-full shrink-0 flex flex-col gap-1.5 pt-0.5"><div className="flex items-start gap-3 text-slate-700"><span className={`text-sm md:text-base ${isGen ? 'text-amber-500' : 'text-slate-500'} w-5 text-right font-black shrink-0 mt-0.5`}>{isGen ? '*' : `${group.phaseIdx+1}.`}</span><div className="flex flex-col gap-1"><span className={`text-base md:text-xl font-black ${isCurrent ? 'text-blue-700' : 'text-slate-700'}`}>{group.phaseName}</span>{isGen ? <span className="text-sm md:text-base font-bold text-amber-600">非屬特定法定階段</span> : <div className="flex items-center gap-2"><span className="text-sm md:text-base font-bold text-slate-400">{isCompleted ? '已完成' : (isCurrent ? '進行中' : '')}</span>{(isCompleted || isCurrent) && hasLogs && <span className="text-sm md:text-base text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded">更新至 {group.logs[group.logs.length-1].date}</span>}</div>}</div></div></div>}
+                                          {hasLogs && <div className="w-full flex-1 mt-1 sm:mt-0"><div className={`${isGen && hasPhases ? 'bg-amber-50/40 border-amber-200/60' : 'bg-slate-50 border-slate-200'} rounded-xl p-4 md:p-6 w-full relative shadow-sm`}><div className={`hidden sm:flex text-xs md:text-sm font-bold text-slate-500 mb-4 border-b ${isGen && hasPhases ? 'border-amber-200/80' : 'border-slate-200/80'} pb-3 gap-6 pr-10`}><div className="w-24 md:w-36 shrink-0">發生日期</div><div className="flex-1">歷程說明與來源</div></div><div className="space-y-0">{group.logs.slice().sort((a,b) => parseTWDate(a.date) - parseTWDate(b.date)).map(l => {
+                                              
+                                              // === 修正：智慧提取資料來源名稱 ===
+                                              let renderNote = l.note || '';
+                                              let buttonSource = l.source;
+                                              if (renderNote.includes("📌 資料來源：")) {
+                                                  const parts = renderNote.split("📌 資料來源：");
+                                                  renderNote = parts[0].trim();
+                                                  if(parts[1]) buttonSource = parts[1].trim();
+                                              }
+
+                                              return (
+                                                <div key={l.id} className={`flex flex-col sm:flex-row sm:items-start border-b ${isGen && hasPhases ? 'border-amber-200/40' : 'border-slate-200/60'} last:border-0 py-4 first:pt-0 last:pb-0 relative pr-0 sm:pr-10 hover:bg-white transition-colors group gap-3 sm:gap-6`}>
+                                                  {/* === 修正：歷程案件狀態改為與來源不同的顏色 (灰色系) 且放大字體 === */}
+                                                  <div className={`sm:w-24 md:w-36 shrink-0 text-sm md:text-base font-black ${isGen && hasPhases ? 'text-amber-700' : 'text-slate-700'} sm:mt-1.5 flex flex-col gap-3`}>
+                                                    <div className="flex items-center gap-1.5 text-slate-500"><span className="sm:hidden text-slate-400"><Icon name="clock" className="w-3.5 h-3.5"/></span>{l.date}</div>
+                                                    <div className="inline-flex w-fit items-center text-slate-700 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm leading-tight break-words text-sm font-black">{l.status || '-'}</div>
+                                                  </div>
+                                                  {/* ================================================================ */}
+                                                  
+                                                  <div className="flex-1 text-sm md:text-base text-slate-700 font-medium leading-relaxed sm:mt-1.5">
+                                                    {renderNote && <p>{renderNote}</p>}
+                                                    
+                                                    {/* === 修正：超連結完美取代文字按鈕，並顯示正確來源名稱 === */}
+                                                    {buttonSource && (
+                                                      <div className={renderNote ? "mt-4" : "mt-1.5"}>
+                                                        {l.sourceUrl ? (
+                                                          <a href={l.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-blue-700 bg-blue-50 hover:bg-blue-100 px-4 py-2 rounded-xl border border-blue-200 text-sm font-black transition-colors shadow-sm w-fit">
+                                                            <Icon name="link" className="w-4 h-4" /> {buttonSource}
+                                                          </a>
+                                                        ) : (
+                                                          <span className="inline-flex items-center gap-2 text-slate-600 bg-slate-100 px-4 py-2 rounded-xl border border-slate-200 text-sm font-black w-fit">
+                                                            <Icon name="info" className="w-4 h-4 text-slate-400" /> {buttonSource}
+                                                          </span>
+                                                        )}
                                                       </div>
-                                                      <div className={hasAnyDescription ? "sm:w-32 md:w-40 shrink-0 text-xs md:text-sm font-bold sm:mt-0.5" : "flex-1 text-xs md:text-sm font-bold sm:mt-0.5"}>
-                                                        <span className="inline-flex items-center text-slate-700 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm leading-tight break-words">
-                                                          {l.status || '-'}
-                                                        </span>
-                                                      </div>
-                                                      {hasAnyDescription && (
-                                                        <div className="flex-1 text-sm md:text-base text-slate-700 font-medium leading-relaxed sm:mt-1">
-                                                          {l.note && <p>{l.note}</p>}
-                                                          {l.source && (
-                                                            <div className={l.note ? "mt-2.5" : ""}>
-                                                              {l.sourceUrl ? (
-                                                                <a href={l.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800 hover:underline transition-colors shadow-sm break-all line-clamp-2 text-xs bg-blue-50 px-2 py-1 rounded" title={l.source}>
-                                                                  <Icon name="external-link" className="w-3.5 h-3.5 shrink-0" /> <span className="truncate">{l.source}</span>
-                                                                </a>
-                                                              ) : (
-                                                                <span className="inline-flex items-center text-slate-500 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm line-clamp-2 text-xs">
-                                                                  {l.source}
-                                                                </span>
-                                                              )}
-                                                            </div>
-                                                          )}
-                                                        </div>
-                                                      )}
-                                                      <button onClick={() => openEditHistoryModal(l)} className={`absolute right-0 top-3 sm:top-3 p-2 bg-white border border-slate-200 shadow-sm rounded-lg text-slate-400 hover:text-blue-600 sm:opacity-0 group-hover:opacity-100 transition-opacity active:bg-slate-100`}>
-                                                        <Icon name="pencil" className="w-4 h-4" />
-                                                      </button>
-                                                    </div>
-                                                  ))}
+                                                    )}
+                                                    {/* ==================================== */}
+                                                  </div>
+                                                  <button onClick={() => openEditHistoryModal(l)} className={`absolute right-0 top-3 sm:top-3 p-2 bg-white border border-slate-200 shadow-sm rounded-lg text-slate-400 hover:text-blue-600 sm:opacity-0 group-hover:opacity-100 transition-opacity active:bg-slate-100`}><Icon name="pencil" className="w-4 h-4" /></button>
                                                 </div>
-                                              </div>
-                                            </div>
-                                          )}
+                                              )
+                                            })}</div></div></div>}
                                         </div>
                                      </div>
                                    );
                                 } 
-                                else if (group.type === 'pending-phase') {
-                                   return (
-                                     <div key={`pending-${group.idx}`} className="relative pl-8 md:pl-12 w-full opacity-40 grayscale grayscale-100">
-                                        <div className="absolute left-[-13px] md:left-[-15px] top-0 bg-white">
-                                           <Icon name="circle-dashed" className="w-6 h-6 md:w-7 md:h-7 text-slate-300" />
-                                        </div>
-                                        <div className="flex flex-col lg:flex-row gap-4 lg:gap-8 w-full pr-4">
-                                          <div className="w-full shrink-0 flex flex-col gap-1.5 pt-0.5">
-                                            <div className="flex items-start gap-3 text-slate-700">
-                                              <span className="text-sm md:text-base text-slate-500 w-5 text-right font-bold shrink-0 mt-0.5">{group.idx+1}.</span>
-                                              <div className="flex flex-col gap-1">
-                                                <span className="text-base md:text-xl font-black text-slate-700">{group.phase}</span>
-                                                <span className="text-sm md:text-base font-bold text-slate-400">尚未啟動之程序</span>
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </div>
-                                     </div>
-                                   );
-                                }
+                                else if (group.type === 'pending-phase') { return ( <div key={`pending-${group.idx}`} className="relative pl-8 md:pl-12 w-full opacity-40 grayscale grayscale-100"><div className="absolute left-[-13px] md:left-[-15px] top-0 bg-white"><Icon name="circle-dashed" className="w-6 h-6 md:w-7 md:h-7 text-slate-300" /></div><div className="flex flex-col lg:flex-row gap-4 lg:gap-8 w-full pr-4"><div className="w-full shrink-0 flex flex-col gap-1.5 pt-0.5"><div className="flex items-start gap-3 text-slate-700"><span className="text-sm md:text-base text-slate-500 w-5 text-right font-bold shrink-0 mt-0.5">{group.idx+1}.</span><div className="flex flex-col gap-1"><span className="text-base md:text-xl font-black text-slate-700">{group.phase}</span><span className="text-sm md:text-base font-bold text-slate-400">尚未啟動之程序</span></div></div></div></div></div> ); }
                                 return null;
                               })}
                             </div>
@@ -931,50 +836,142 @@
             )}
           </main>
 
-          {/* 手機專屬懸浮新增按鈕 (FAB) - 僅在首頁顯示 */}
           {currentView === 'dashboard' && (
-            <button onClick={openAddModal} className="md:hidden fixed bottom-6 right-6 w-14 h-14 bg-blue-600 text-white rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.2)] flex items-center justify-center z-40 hover:bg-blue-700 active:scale-95 transition-transform">
-              <Icon name="plus" className="w-6 h-6" />
-            </button>
+            <button onClick={openAddModal} className="md:hidden fixed bottom-6 right-6 w-14 h-14 bg-blue-600 text-white rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.2)] flex items-center justify-center z-40 hover:bg-blue-700 active:scale-95 transition-transform"><Icon name="plus" className="w-6 h-6" /></button>
           )}
 
-          {/* 待審核 Inbox Modal */}
+          {/* 🌟 待審核 Inbox Modal */}
           {isInboxOpen && (
             <div className="fixed inset-0 bg-slate-900/70 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-md animate-in fade-in duration-300">
               <div className="bg-white w-full max-w-3xl rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col h-[90vh] sm:max-h-[85vh] overflow-hidden border border-slate-200">
                 <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-amber-50">
-                  <span className="font-black text-amber-900 text-lg flex items-center gap-3">
-                    <Icon name="inbox" className="w-6 h-6 text-amber-600" /> AI 待審核區
-                  </span>
+                  <span className="font-black text-amber-900 text-lg flex items-center gap-3"><Icon name="inbox" className="w-6 h-6 text-amber-600" /> AI 待審核區</span>
                   <button onClick={()=>setIsInboxOpen(false)} className="text-amber-700 hover:bg-amber-100 p-2 rounded-full transition-colors"><Icon name="x" className="w-6 h-6" /></button>
                 </div>
                 <div className="p-4 sm:p-6 overflow-y-auto space-y-4 bg-slate-50 flex-1">
-                  {pendingUpdates.length === 0 ? (
-                    <div className="text-center py-16 text-slate-400 font-bold italic">目前收件匣是空的，機器人正在雲端守候中...</div>
-                  ) : pendingUpdates.map(update => (
-                    <div key={update.id} className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 hover:border-blue-400 transition-all">
-                      <div className="flex flex-col sm:flex-row sm:justify-between items-start gap-4">
-                        <div>
-                          <div className="text-blue-800 font-black text-xl">{update.projectName}</div>
-                          <div className="text-slate-400 text-xs font-bold mt-1 flex items-center gap-1"><Icon name="clock" className="w-3.5 h-3.5"/> 抓取日期：{update.date}</div>
+                  {pendingUpdates.length === 0 ? <div className="text-center py-16 text-slate-400 font-bold italic">目前收件匣是空的，機器人正在雲端守候中...</div> : pendingUpdates.map(update => {
+                    
+                    let typeBadge = "系統通知";
+                    let typeColor = "bg-slate-100 text-slate-600";
+                    let contentText = update.note || "";
+                    let sourceText = update.source || "";
+
+                    if (contentText.startsWith("【新聞】")) {
+                      typeBadge = "📰 新聞";
+                      typeColor = "bg-blue-100 text-blue-700 border-blue-200";
+                      contentText = contentText.replace("【新聞】", "").trim();
+                    } else if (contentText.startsWith("【政府資訊】")) {
+                      typeBadge = "🏛️ 政府資訊";
+                      typeColor = "bg-emerald-100 text-emerald-700 border-emerald-200";
+                      contentText = contentText.replace("【政府資訊】", "").trim();
+                      if (contentText.includes("📌 資料來源：")) {
+                         const parts = contentText.split("📌 資料來源：");
+                         contentText = parts[0].trim();
+                         if(parts[1]) sourceText = parts[1].trim(); // 確實抓取真實資料來源名稱
+                      }
+                    } else if (contentText.startsWith("【機器人原始抓取資料】")) {
+                      typeBadge = "🤖 原始資料";
+                      typeColor = "bg-amber-100 text-amber-700 border-amber-200";
+                      contentText = contentText.replace("【機器人原始抓取資料】", "").trim();
+                    }
+
+                    return (
+                      <div key={update.id} className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-sm hover:border-blue-400 transition-all flex flex-col gap-4">
+                        
+                        <div className="flex flex-col sm:flex-row sm:justify-between items-start gap-4 mb-2">
+                          <div>
+                            <div className="text-blue-800 font-black text-xl">{update.projectName}</div>
+                            <div className="text-slate-400 text-xs font-bold mt-1 flex items-center gap-1"><Icon name="clock" className="w-3.5 h-3.5"/> 抓取日期：{update.date}</div>
+                          </div>
+                          <div className="flex gap-2 w-full sm:w-auto">
+                            <button onClick={()=>handleRejectUpdate(update.id)} className="flex-1 sm:flex-none p-3 sm:p-2.5 flex justify-center text-red-500 bg-red-50 sm:bg-transparent border border-red-100 sm:border-none hover:bg-red-100 rounded-xl transition-colors" title="捨棄刪除"><Icon name="trash-2" className="w-5 h-5"/></button>
+                            <button onClick={()=>handleApproveUpdate(update)} className="flex-[3] sm:flex-none bg-blue-600 text-white px-5 py-3 sm:py-2.5 rounded-xl font-black text-sm shadow-md hover:bg-blue-700 active:scale-95 transition-all text-center">確認加入</button>
+                          </div>
                         </div>
-                        <div className="flex gap-2 w-full sm:w-auto">
-                          <button onClick={()=>handleRejectUpdate(update.id)} className="flex-1 sm:flex-none p-3 sm:p-2.5 flex justify-center text-red-500 bg-red-50 sm:bg-transparent border border-red-100 sm:border-none hover:bg-red-100 rounded-xl transition-colors" title="捨棄刪除">
-                            <Icon name="trash-2" className="w-5 h-5"/>
-                          </button>
-                          <button onClick={()=>handleApproveUpdate(update)} className="flex-[3] sm:flex-none bg-blue-600 text-white px-5 py-3 sm:py-2.5 rounded-xl font-black text-sm shadow-md hover:bg-blue-700 active:scale-95 transition-all text-center">
-                            確認加入
-                          </button>
+
+                        <div className="flex flex-col gap-4">
+                          <div>
+                            <span className={`px-3 py-1.5 rounded-md text-xs font-black border shadow-sm ${typeColor}`}>{typeBadge}</span>
+                          </div>
+                          
+                          <div className="text-slate-800 text-base md:text-lg font-bold leading-relaxed px-1">
+                            {contentText.split('\n').map((line, idx) => {
+                              const urlRegex = /(https?:\/\/[^\s]+)/g;
+                              const parts = line.split(urlRegex);
+                              return (
+                                <div key={idx} className={idx > 0 ? "mt-2" : ""}>
+                                  {parts.map((part, j) => {
+                                    const isUrl = part.startsWith('http://') || part.startsWith('https://');
+                                    return isUrl ? (
+                                      <a key={j} href={part} target="_blank" rel="noreferrer" className="text-blue-600 hover:text-blue-800 hover:underline break-all">
+                                        {part}
+                                      </a> 
+                                    ) : part;
+                                  })}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          
+                          {/* === 修正：點擊按鈕直接取代來源文字，並顯示正確來源 === */}
+                          <div className="mt-4 border-t border-slate-100 pt-4 flex">
+                            {update.sourceUrl ? (
+                              <a href={update.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-sm font-black text-blue-700 hover:text-blue-800 hover:underline transition-colors bg-blue-50 hover:bg-blue-100 px-4 py-2.5 rounded-xl border border-blue-200 shadow-sm w-fit">
+                                <Icon name="link" className="h-4 w-4" /> {sourceText || "前往來源網頁"}
+                              </a>
+                            ) : (
+                              <span className="inline-flex items-center gap-2 text-sm font-black text-slate-600 bg-slate-100 px-4 py-2.5 rounded-xl border border-slate-200 w-fit">
+                                <Icon name="info" className="h-4 w-4 text-slate-400" /> {sourceText || "系統來源"}
+                              </span>
+                            )}
+                          </div>
+                          {/* ===================================== */}
                         </div>
+                        
                       </div>
-                      <div className="text-slate-700 text-sm sm:text-base leading-relaxed p-4 bg-slate-50 rounded-xl border border-slate-100 italic">"{update.note}"</div>
-                      {update.sourceUrl && (
-                        <a href={update.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs font-black text-blue-600 hover:text-blue-800 hover:underline transition-colors mt-2">
-                          <Icon name="external-link" className="h-3.5 w-3.5" /> 前往來源新聞網頁確認
-                        </a>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 🌟 雲端查核紀錄 Modal */}
+          {isReportsModalOpen && (
+            <div className="fixed inset-0 bg-slate-900/70 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-300">
+              <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl flex flex-col h-[85vh] overflow-hidden border border-slate-200">
+                <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                  <span className="font-black text-slate-800 text-lg flex items-center gap-3"><Icon name="clipboard-list" className="w-6 h-6 text-slate-600" /> 系統自動查核紀錄</span>
+                  <button onClick={()=>{setIsReportsModalOpen(false); setSelectedReport(null);}} className="text-slate-400 hover:bg-slate-200 p-2 rounded-full transition-colors"><Icon name="x" className="w-6 h-6" /></button>
+                </div>
+                
+                <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
+                  <div className={`${selectedReport ? 'hidden md:block' : 'block'} md:w-1/3 border-r border-slate-200 bg-slate-50 overflow-y-auto p-4 space-y-2`}>
+                    {reports.length === 0 ? <div className="text-center text-slate-400 text-sm mt-10 font-bold">尚無查核紀錄，機器人執行後會自動產生</div> : reports.map(r => (
+                      <button key={r.id} onClick={()=>setSelectedReport(r)} className={`w-full text-left p-4 rounded-xl border transition-all ${selectedReport?.id === r.id ? 'bg-blue-50 border-blue-300 shadow-sm' : 'bg-white border-slate-200 hover:border-blue-200'}`}>
+                        <div className="font-black text-slate-700 text-sm mb-1">{r.dateStr}</div>
+                        <div className="flex gap-2 text-xs font-bold">
+                          <span className="text-emerald-600">更新: {r.updated}</span>
+                          <span className="text-slate-400">總計: {r.total}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  
+                  <div className={`${!selectedReport ? 'hidden md:flex' : 'flex'} md:w-2/3 bg-white p-0 md:p-6 overflow-y-hidden flex-col h-full`}>
+                    {selectedReport ? (
+                       <div className="p-4 md:p-0 flex flex-col h-full">
+                         <button onClick={()=>setSelectedReport(null)} className="md:hidden mb-4 text-blue-600 font-bold flex items-center gap-1"><Icon name="arrow-left" className="w-4 h-4"/> 返回列表</button>
+                         <div className="bg-slate-800 text-slate-50 p-4 md:p-6 rounded-xl font-mono text-xs md:text-sm leading-relaxed overflow-y-auto flex-1 whitespace-pre-wrap shadow-inner">
+                           {selectedReport.reportText}
+                         </div>
+                       </div>
+                    ) : (
+                       <div className="h-full flex items-center justify-center text-slate-400 font-bold">
+                         請選擇左側的紀錄以檢視詳細內容
+                       </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -988,92 +985,84 @@
                   <span className="font-black text-slate-800 text-lg flex items-center gap-2"><Icon name="settings" className="w-5 h-5 text-slate-600" /> 系統設定</span>
                   <button onClick={()=>{setIsTypeModalOpen(false); setConfirmDeleteType(false);}} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button>
                 </div>
+                <div className="flex border-b border-slate-200 bg-white">
+                  <button onClick={() => setSettingsTab('types')} className={`flex-1 py-4 text-sm font-black transition-colors border-b-2 ${settingsTab === 'types' ? 'text-blue-600 border-blue-600' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>案件類型與程序</button>
+                  <button onClick={() => setSettingsTab('sources')} className={`flex-1 py-4 text-sm font-black transition-colors border-b-2 ${settingsTab === 'sources' ? 'text-blue-600 border-blue-600' : 'text-slate-400 border-transparent hover:text-slate-600'}`}>常用來源管理</button>
+                </div>
                 <div className="p-6 overflow-y-auto no-scrollbar space-y-8 flex-1">
-                  
-                  {settingsView === 'list' ? (
-                    <div className="space-y-4">
-                      <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                        <div className="flex items-center gap-2">
-                          <Icon name="list-todo" className="w-5 h-5 text-blue-600" />
-                          <h4 className="font-black text-slate-800 text-base md:text-lg">案件類型與法定程序管理</h4>
+                  {settingsTab === 'types' ? (
+                    settingsView === 'list' ? (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                          <div className="flex items-center gap-2"><Icon name="list-todo" className="w-5 h-5 text-blue-600" /><h4 className="font-black text-slate-800 text-base md:text-lg">案件類型管理</h4></div>
+                          <button onClick={() => { setSettingsView('type-edit'); setNewTypeData({ name: '', phases: [''] }); }} className="text-sm font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors"><Icon name="plus-circle" className="w-4 h-4" /> 新增類型</button>
                         </div>
-                        <button onClick={() => { setSettingsView('add'); setNewTypeData({ name: '', phases: [''] }); }} className="text-sm font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition-colors">
-                          <Icon name="plus-circle" className="w-4 h-4" /> 新增類型
-                        </button>
-                      </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {projectTypes.map((type, idx) => (
-                          <div key={idx} onClick={() => { setEditingTypeIndex(idx); setNewTypeData(JSON.parse(JSON.stringify(type))); setSettingsView('edit'); setConfirmDeleteType(false); }} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-blue-400 hover:shadow-md transition-all group">
-                            <div className="flex flex-col gap-1">
-                              <span className="font-black text-slate-700 group-hover:text-blue-700">{type.name}</span>
-                              <span className="text-xs font-bold text-slate-400">共 {type.phases.length} 個法定程序</span>
-                            </div>
-                            <Icon name="chevron-right" className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-transform group-hover:translate-x-1" />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3 pb-2 border-b border-slate-100">
-                        <button onClick={() => {setSettingsView('list'); setConfirmDeleteType(false);}} className="p-1 hover:bg-slate-100 rounded-lg transition-colors"><Icon name="arrow-left" className="w-5 h-5 text-slate-500" /></button>
-                        <Icon name="list-todo" className="w-5 h-5 text-blue-600" />
-                        <h4 className="font-black text-slate-800 text-base md:text-lg">{settingsView === 'add' ? '新增案件類型' : `編輯：${projectTypes[editingTypeIndex]?.name}`}</h4>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-black text-slate-700">1. 類型名稱</label>
-                        <input type="text" value={newTypeData.name} onChange={e=>setNewTypeData({...newTypeData, name:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：市地重劃" />
-                      </div>
-                      <div className="space-y-3">
-                        <label className="text-sm font-black text-slate-700">2. 設定法定階段 (依序)</label>
-                        <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
-                          {newTypeData.phases.map((phase, idx) => (
-                            <div key={idx} className="flex items-center gap-3">
-                              <span className="text-sm font-black text-slate-400 w-5">{idx+1}.</span>
-                              <input type="text" value={phase} onChange={e=>{const updated = [...newTypeData.phases]; updated[idx] = e.target.value; setNewTypeData({ ...newTypeData, phases: updated });}} className="flex-1 p-2.5 bg-white rounded-lg text-sm font-bold border border-slate-300 outline-none" placeholder="階段名稱" />
-                              <button onClick={()=>setNewTypeData({...newTypeData, phases: newTypeData.phases.filter((_, i) => i !== idx)})} className="p-2.5 text-slate-400 hover:text-red-500 bg-white rounded-lg border border-slate-300 shadow-sm"><Icon name="trash-2" className="w-4 h-4" /></button>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {projectTypes.map((type, idx) => (
+                            <div key={idx} onClick={() => { setEditingTypeIndex(idx); setNewTypeData(JSON.parse(JSON.stringify(type))); setSettingsView('type-edit'); setConfirmDeleteType(false); }} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-blue-400 hover:shadow-md transition-all group">
+                              <div className="flex flex-col gap-1"><span className="font-black text-slate-700 group-hover:text-blue-700">{type.name}</span><span className="text-xs font-bold text-slate-400">共 {type.phases.length} 個程序</span></div>
+                              <Icon name="chevron-right" className="w-5 h-5 text-slate-300 group-hover:text-blue-500 transition-transform group-hover:translate-x-1" />
                             </div>
                           ))}
-                          <button onClick={()=>setNewTypeData({...newTypeData, phases: [...newTypeData.phases, '']})} className="w-full py-3 flex items-center justify-center gap-2 text-sm font-bold text-blue-600 border-2 border-dashed border-blue-300 rounded-lg mt-4 bg-blue-50 hover:bg-blue-100 transition-colors"><Icon name="plus-circle" className="w-4 h-4" /> 新增一階</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-3 pb-2 border-b border-slate-100">
+                          <button onClick={() => {setSettingsView('list'); setConfirmDeleteType(false);}} className="p-1 hover:bg-slate-100 rounded-lg transition-colors"><Icon name="arrow-left" className="w-5 h-5 text-slate-500" /></button>
+                          <h4 className="font-black text-slate-800 text-base md:text-lg">{newTypeData.name ? `編輯：${newTypeData.name}` : '新增案件類型'}</h4>
+                        </div>
+                        <div className="space-y-2"><label className="text-sm font-black text-slate-700">1. 類型名稱</label><input type="text" value={newTypeData.name} onChange={e=>setNewTypeData({...newTypeData, name:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：市地重劃" /></div>
+                        <div className="space-y-3"><label className="text-sm font-black text-slate-700">2. 設定法定階段 (依序)</label>
+                          <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                            {newTypeData.phases.map((phase, idx) => (
+                              <div key={idx} className="flex items-center gap-3"><span className="text-sm font-black text-slate-400 w-5">{idx+1}.</span><input type="text" value={phase} onChange={e=>{const updated = [...newTypeData.phases]; updated[idx] = e.target.value; setNewTypeData({ ...newTypeData, phases: updated });}} className="flex-1 p-2.5 bg-white rounded-lg text-sm font-bold border border-slate-300 outline-none" placeholder="階段名稱" /><button onClick={()=>setNewTypeData({...newTypeData, phases: newTypeData.phases.filter((_, i) => i !== idx)})} className="p-2.5 text-slate-400 hover:text-red-500 bg-white rounded-lg border border-slate-300 shadow-sm"><Icon name="trash-2" className="w-4 h-4" /></button></div>
+                            ))}
+                            <button onClick={()=>setNewTypeData({...newTypeData, phases: [...newTypeData.phases, '']})} className="w-full py-3 flex items-center justify-center gap-2 text-sm font-bold text-blue-600 border-2 border-dashed border-blue-300 rounded-lg mt-4 bg-blue-50 hover:bg-blue-100 transition-colors"><Icon name="plus-circle" className="w-4 h-4" /> 新增一階</button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                        <div className="flex items-center gap-2"><Icon name="star" className="w-5 h-5 text-amber-500" /><h4 className="font-black text-slate-800 text-base md:text-lg">常用入口網址管理</h4></div>
+                      </div>
+                      <div className="space-y-4">
+                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col gap-3">
+                           <h5 className="text-sm font-bold text-slate-700">新增常用來源</h5>
+                           <div className="flex flex-col sm:flex-row gap-2">
+                             <input id="newCommonSourceName" placeholder="來源名稱 (例：新竹縣政府公告)" className="flex-1 p-2.5 rounded-lg border border-slate-300 text-sm outline-none" />
+                             <input id="newCommonSourceUrl" placeholder="網址 URL" className="flex-[2] p-2.5 rounded-lg border border-slate-300 text-sm outline-none" />
+                             <button onClick={() => {
+                                const nameEl = document.getElementById('newCommonSourceName');
+                                const urlEl = document.getElementById('newCommonSourceUrl');
+                                if (nameEl.value && urlEl.value) { handleAddCommonSource(nameEl.value, urlEl.value); nameEl.value = ''; urlEl.value = ''; }
+                             }} className="bg-blue-600 text-white px-4 py-2.5 rounded-lg text-sm font-bold shadow hover:bg-blue-700 whitespace-nowrap">新增</button>
+                           </div>
+                        </div>
+                        <div className="space-y-2 mt-4">
+                          <h5 className="text-sm font-bold text-slate-700">已儲存的常用來源</h5>
+                          {commonSources.length === 0 ? <div className="text-slate-400 text-sm italic py-4 text-center">尚未新增任何常用來源</div> : commonSources.map(source => (
+                            <div key={source.id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-white p-3 rounded-lg border border-slate-200 shadow-sm gap-2">
+                              <div className="flex flex-col overflow-hidden w-full"><span className="font-bold text-slate-800 text-sm">{source.name}</span><span className="text-xs text-slate-400 truncate">{source.url}</span></div>
+                              <button onClick={() => handleDeleteCommonSource(source.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors shrink-0"><Icon name="trash-2" className="w-4 h-4"/></button>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     </div>
                   )}
-
                 </div>
-                
-                {/* 系統設定 Footer */}
                 <div className="p-5 bg-slate-50 border-t border-slate-100 flex justify-between items-center shrink-0 sm:rounded-b-2xl gap-4">
-                  {settingsView === 'list' ? (
-                    <div className="flex justify-end w-full">
-                      <button onClick={()=>setIsTypeModalOpen(false)} className="px-8 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100 transition-colors">關閉設定</button>
-                    </div>
+                  {settingsTab === 'sources' || settingsView === 'list' ? (
+                    <div className="flex justify-end w-full"><button onClick={()=>setIsTypeModalOpen(false)} className="px-8 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100 transition-colors">關閉設定</button></div>
                   ) : (
                     <div className="flex flex-col sm:flex-row justify-between w-full gap-4">
                       <div>
-                        {settingsView === 'edit' && (
-                          confirmDeleteType ? (
-                            <div className="flex gap-2">
-                              <button onClick={async () => {
-                                if (!user) return;
-                                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projectTypes', projectTypes[editingTypeIndex].name));
-                                setSettingsView('list');
-                                setConfirmDeleteType(false);
-                              }} className="px-4 py-3 bg-red-600 text-white rounded-lg font-bold text-sm shadow-md hover:bg-red-700 transition-colors">確定刪除</button>
-                              <button onClick={() => setConfirmDeleteType(false)} className="px-4 py-3 bg-white border border-slate-300 text-slate-600 rounded-lg font-bold text-sm shadow-sm hover:bg-slate-50 transition-colors">取消</button>
-                            </div>
-                          ) : (
-                            <button onClick={() => setConfirmDeleteType(true)} className="w-full sm:w-auto px-4 py-3 text-red-600 font-bold text-sm bg-white border border-red-200 rounded-lg shadow-sm hover:bg-red-50 flex items-center justify-center gap-1.5 transition-colors">
-                              <Icon name="trash-2" className="w-4 h-4"/> 刪除類型
-                            </button>
-                          )
-                        )}
+                        {settingsView === 'type-edit' && (confirmDeleteType ? <div className="flex gap-2"><button onClick={async () => { if (!user) return; await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projectTypes', projectTypes[editingTypeIndex].name)); setSettingsView('list'); setConfirmDeleteType(false); }} className="px-4 py-3 bg-red-600 text-white rounded-lg font-bold text-sm shadow-md hover:bg-red-700 transition-colors">確定刪除</button><button onClick={() => setConfirmDeleteType(false)} className="px-4 py-3 bg-white border border-slate-300 text-slate-600 rounded-lg font-bold text-sm shadow-sm hover:bg-slate-50 transition-colors">取消</button></div> : <button onClick={() => setConfirmDeleteType(true)} className="w-full sm:w-auto px-4 py-3 text-red-600 font-bold text-sm bg-white border border-red-200 rounded-lg shadow-sm hover:bg-red-50 flex items-center justify-center gap-1.5 transition-colors"><Icon name="trash-2" className="w-4 h-4"/> 刪除類型</button>)}
                       </div>
-                      <div className="flex gap-3 w-full sm:w-auto">
-                        <button onClick={()=>{setSettingsView('list'); setConfirmDeleteType(false);}} className="flex-1 sm:flex-none px-6 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100 transition-colors">返回</button>
-                        <button onClick={handleSaveNewType} className="flex-1 sm:flex-none px-8 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700 transition-colors">儲存設定</button>
-                      </div>
+                      <div className="flex gap-3 w-full sm:w-auto"><button onClick={()=>{setSettingsView('list'); setConfirmDeleteType(false);}} className="flex-1 sm:flex-none px-6 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-100 transition-colors">返回</button><button onClick={handleSaveNewType} className="flex-1 sm:flex-none px-8 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700 transition-colors">儲存設定</button></div>
                     </div>
                   )}
                 </div>
@@ -1085,66 +1074,44 @@
           {isProjectModalOpen && (
             <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 backdrop-blur-sm">
               <div className="bg-white w-full max-w-3xl rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col h-[90vh] sm:max-h-[90vh] animate-in slide-in-from-bottom-4 duration-200">
-                <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 sm:rounded-t-2xl">
-                  <span className="font-black text-slate-800 text-lg md:text-xl">{modalMode === 'add' ? '新增案件資料' : '編輯案件資料'}</span>
-                  <button onClick={()=>setIsProjectModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button>
-                </div>
+                <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 sm:rounded-t-2xl"><span className="font-black text-slate-800 text-lg md:text-xl">{modalMode === 'add' ? '新增案件資料' : '編輯案件資料'}</span><button onClick={()=>setIsProjectModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button></div>
                 <div className="p-5 md:p-8 overflow-y-auto space-y-6 md:space-y-8 flex-1">
-                  
-                  {/* 基本資料區塊 */}
                   <div>
                     <h4 className="font-black text-blue-800 mb-4 flex items-center gap-2 text-sm md:text-base border-b border-blue-100 pb-2"><Icon name="info" className="w-4 h-4"/> 基本資料設定</h4>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
                       <div className="space-y-2 md:col-span-2"><label className="text-sm font-black text-slate-700">案件名稱</label><input type="text" value={formData.name || ''} onChange={e=>setFormData({...formData, name:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold focus:ring-2 focus:ring-blue-500 outline-none" /></div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-black text-slate-700 flex justify-between items-center"><span>案件類型</span><button onClick={() => {setIsProjectModalOpen(false); setIsTypeModalOpen(true);}} className="text-blue-600 hover:underline flex items-center gap-1 text-xs"><Icon name="settings" className="w-3.5 h-3.5" /> 新增類型</button></label>
-                        <select value={formData.type || ''} onChange={e=>setFormData({...formData, type:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none">{projectTypes.map(t=><option key={t.name} value={t.name}>{t.name}</option>)}</select>
-                      </div>
+                      <div className="space-y-2"><label className="text-sm font-black text-slate-700 flex justify-between items-center"><span>案件類型</span><button onClick={() => {setIsProjectModalOpen(false); setIsTypeModalOpen(true);}} className="text-blue-600 hover:underline flex items-center gap-1 text-xs"><Icon name="settings" className="w-3.5 h-3.5" /> 新增類型</button></label><select value={formData.type || ''} onChange={e=>setFormData({...formData, type:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none">{projectTypes.map(t=><option key={t.name} value={t.name}>{t.name}</option>)}</select></div>
                       <div className="space-y-2"><label className="text-sm font-black text-slate-700">縣市區域</label><input type="text" value={formData.city || ''} onChange={e=>setFormData({...formData, city:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
                       <div className="space-y-2 md:col-span-2"><label className="text-sm font-black text-slate-700">目前狀態</label><input type="text" value={formData.status || ''} onChange={e=>setFormData({...formData, status:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
-                      
-                      {((projectTypes.find(t => t.name === formData.type)?.phases) || []).length > 0 && modalMode === 'edit' && (
-                        <div className="space-y-2 md:col-span-2 bg-blue-50 p-5 rounded-xl border border-blue-100">
-                          <label className="text-sm font-black text-blue-800">修正進度階段 (手動調整時間軸位置)</label>
-                          <select value={formData.currentPhaseIndex || 0} onChange={e=>setFormData({...formData, currentPhaseIndex: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none mt-2">
-                            <option value={-1}>未啟動法定階段</option>
-                            {(projectTypes.find(t => t.name === formData.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}
-                          </select>
-                        </div>
-                      )}
+                      {((projectTypes.find(t => t.name === formData.type)?.phases) || []).length > 0 && modalMode === 'edit' && (<div className="space-y-2 md:col-span-2 bg-blue-50 p-5 rounded-xl border border-blue-100"><label className="text-sm font-black text-blue-800">修正進度階段 (手動調整時間軸位置)</label><select value={formData.currentPhaseIndex || 0} onChange={e=>setFormData({...formData, currentPhaseIndex: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none mt-2"><option value={-1}>未啟動法定階段</option>{(projectTypes.find(t => t.name === formData.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}</select></div>)}
                     </div>
                   </div>
-
-                  {/* 詳細資訊區塊 */}
                   <div>
                     <h4 className="font-black text-blue-800 mb-4 flex items-center gap-2 text-sm md:text-base border-b border-blue-100 pb-2"><Icon name="users" className="w-4 h-4"/> 聯絡人資訊</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
-                      <div className="space-y-2"><label className="text-sm font-black text-slate-700">主辦機關</label><input type="text" value={formData.agency || ''} onChange={e=>setFormData({...formData, agency:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
-                      <div className="space-y-2"><label className="text-sm font-black text-slate-700">承辦人員</label><input type="text" value={formData.handler || ''} onChange={e=>setFormData({...formData, handler:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
-                      <div className="space-y-2 md:col-span-2"><label className="text-sm font-black text-slate-700">聯絡電話</label><input type="text" value={formData.handlerPhone || ''} onChange={e=>setFormData({...formData, handlerPhone:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div>
-                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5"><div className="space-y-2"><label className="text-sm font-black text-slate-700">主辦機關</label><input type="text" value={formData.agency || ''} onChange={e=>setFormData({...formData, agency:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div><div className="space-y-2"><label className="text-sm font-black text-slate-700">承辦人員</label><input type="text" value={formData.handler || ''} onChange={e=>setFormData({...formData, handler:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div><div className="space-y-2 md:col-span-2"><label className="text-sm font-black text-slate-700">聯絡電話</label><input type="text" value={formData.handlerPhone || ''} onChange={e=>setFormData({...formData, handlerPhone:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" /></div></div>
                   </div>
-
-                  {/* 🚀 AI 精準追蹤設定區塊 */}
                   <div>
                     <h4 className="font-black text-emerald-700 mb-4 flex items-center gap-2 text-sm md:text-base border-b border-emerald-100 pb-2"><Icon name="bot" className="w-4 h-4"/> 雲端 AI 精準追蹤設定</h4>
                     <div className="grid grid-cols-1 gap-4 md:gap-5 bg-emerald-50/50 p-4 md:p-5 rounded-xl border border-emerald-100">
-                      <div className="space-y-2">
-                        <label className="text-sm font-black text-slate-700 flex flex-wrap items-center gap-2">追蹤關鍵字 / 關聯計畫名稱 <span className="text-[10px] font-bold text-emerald-600 border border-emerald-200 px-2 py-0.5 rounded bg-white leading-none">提升AI判讀準確率</span></label>
-                        <input type="text" value={formData.keywords || ''} onChange={e=>setFormData({...formData, keywords:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold focus:ring-2 focus:ring-emerald-400 outline-none" placeholder="例如：變更新竹市都市計畫, 水源地區 (請用逗號分隔)" />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-black text-slate-700 flex flex-wrap items-center gap-2">官方公告網址 / 特定來源 <span className="text-[10px] font-bold text-emerald-600 border border-emerald-200 px-2 py-0.5 rounded bg-white leading-none">可輸入多個，請用空格或換行分隔</span></label>
-                        <textarea rows="2" value={formData.govUrl || ''} onChange={e=>setFormData({...formData, govUrl:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold focus:ring-2 focus:ring-emerald-400 outline-none text-blue-600 placeholder-slate-400 leading-relaxed" placeholder="例如：https://www.cpami.gov.tw/...&#10;https://www.hsinchu.gov.tw/..."></textarea>
+                      <div className="space-y-2"><label className="text-sm font-black text-slate-700 flex flex-wrap items-center gap-2">追蹤關鍵字 / 關聯計畫名稱 <span className="text-[10px] font-bold text-emerald-600 border border-emerald-200 px-2 py-0.5 rounded bg-white leading-none">提升AI判讀準確率</span></label><input type="text" value={formData.keywords || ''} onChange={e=>setFormData({...formData, keywords:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold focus:ring-2 focus:ring-emerald-400 outline-none" placeholder="例如：變更新竹市都市計畫, 水源地區" /></div>
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap justify-between items-center gap-2">
+                          <label className="text-sm font-black text-slate-700 flex items-center gap-2">官方公告網址 / 特定來源</label>
+                          {commonSources.length > 0 && (
+                            <select onChange={(e) => { if(!e.target.value) return; const selected = commonSources.find(s => s.id === e.target.value); if(selected) { setFormData({...formData, sources: [...(formData.sources || []), {name: selected.name, url: selected.url}]}); } e.target.value = ''; }} className="text-xs font-bold border border-blue-300 text-blue-700 rounded-lg px-2 py-1.5 bg-blue-50 outline-none hover:bg-blue-100 cursor-pointer"><option value="">+ 從常用清單加入</option>{commonSources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+                          )}
+                        </div>
+                        <div className="space-y-3">
+                          {(formData.sources || []).map((source, idx) => (
+                            <div key={idx} className="flex flex-col sm:flex-row gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm relative group"><div className="flex-1 space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">網站名稱</label><input type="text" value={source.name || ''} onChange={e => { const updated = [...formData.sources]; updated[idx].name = e.target.value; setFormData({...formData, sources: updated}); }} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:bg-white focus:border-blue-300 transition-all" placeholder="例如：新竹市政府公告" /></div><div className="flex-[2] space-y-1"><label className="text-[10px] font-bold text-slate-400 uppercase">網址 (URL)</label><input type="text" value={source.url || ''} onChange={e => { const updated = [...formData.sources]; updated[idx].url = e.target.value; setFormData({...formData, sources: updated}); }} className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm outline-none focus:bg-white focus:border-blue-300 transition-all text-blue-600" placeholder="https://..." /></div><button onClick={() => { setFormData({...formData, sources: formData.sources.filter((_, i) => i !== idx)}); }} className="sm:mt-6 p-2 text-slate-300 hover:text-red-500 transition-colors"><Icon name="trash-2" className="w-4 h-4" /></button></div>
+                          ))}
+                          <button onClick={() => setFormData({...formData, sources: [...(formData.sources || []), {name: '', url: ''}]})} className="w-full py-2.5 flex items-center justify-center gap-2 text-xs font-bold text-blue-600 border-2 border-dashed border-blue-200 rounded-xl hover:bg-blue-50 transition-all"><Icon name="plus-circle" className="w-4 h-4" /> 新增特定來源</button>
+                        </div>
                       </div>
                     </div>
                   </div>
-
                 </div>
-                <div className="p-5 sm:p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-4 shrink-0 sm:rounded-b-2xl">
-                  <button onClick={()=>setIsProjectModalOpen(false)} className="w-full sm:w-auto px-8 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg hover:bg-slate-50 shadow-sm">取消</button>
-                  <button onClick={handleSaveProject} className="w-full sm:w-auto px-10 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700">確認儲存</button>
-                </div>
+                <div className="p-5 sm:p-6 bg-slate-50 border-t border-slate-100 flex justify-end gap-4 shrink-0 sm:rounded-b-2xl"><button onClick={()=>setIsProjectModalOpen(false)} className="w-full sm:w-auto px-8 py-3 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg hover:bg-slate-50 shadow-sm">取消</button><button onClick={handleSaveProject} className="w-full sm:w-auto px-10 py-3 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700">確認儲存</button></div>
               </div>
             </div>
           )}
@@ -1153,80 +1120,25 @@
           {isHistoryModalOpen && selectedProject && (
             <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 backdrop-blur-sm">
               <div className="bg-white w-full max-w-2xl rounded-t-3xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90vh] animate-in slide-in-from-bottom-4 duration-200">
-                <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 sm:rounded-t-2xl">
-                  <span className="font-black text-slate-800 text-lg md:text-xl flex items-center gap-2.5"><Icon name="file-text" className="w-5 h-5 md:w-6 md:h-6 text-blue-600" /> {historyFormData.mode === 'add' ? '新增歷程紀錄' : '編輯歷程紀錄'}</span>
-                  <button onClick={()=>setIsHistoryModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button>
-                </div>
+                <div className="p-5 sm:p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 shrink-0 sm:rounded-t-2xl"><span className="font-black text-slate-800 text-lg md:text-xl flex items-center gap-2.5"><Icon name="file-text" className="w-5 h-5 md:w-6 md:h-6 text-blue-600" /> {historyFormData.mode === 'add' ? '新增歷程紀錄' : '編輯歷程紀錄'}</span><button onClick={()=>setIsHistoryModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icon name="x" className="w-6 h-6" /></button></div>
                 <div className="p-6 md:p-8 overflow-y-auto space-y-5 md:space-y-6 flex-1">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div className="space-y-2">
-                      <label className="text-sm font-black text-slate-700">發生日期</label>
-                      <input type="text" value={historyFormData.date || ''} onChange={e=>setHistoryFormData({...historyFormData, date:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：115.03.20" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-black text-slate-700 flex items-center gap-2">案件狀態 <span className="text-xs font-bold text-slate-400 font-normal">(將自動同步專案總表)</span></label>
-                      <input type="text" value={historyFormData.status || ''} onChange={e=>setHistoryFormData({...historyFormData, status:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：都計審議中" />
-                    </div>
-                    <div className="space-y-2 md:col-span-2">
-                      <label className="text-sm font-black text-slate-700">歷程說明內容</label>
-                      <textarea rows="4" value={historyFormData.note || ''} onChange={e=>setHistoryFormData({...historyFormData, note:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed" placeholder="請填寫最新辦理情形..."></textarea>
-                    </div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700">發生日期</label><input type="text" value={historyFormData.date || ''} onChange={e=>setHistoryFormData({...historyFormData, date:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：115.03.20" /></div>
+                    <div className="space-y-2"><label className="text-sm font-black text-slate-700 flex items-center gap-2">案件狀態 <span className="text-xs font-bold text-slate-400 font-normal">(將自動同步專案總表)</span></label><input type="text" value={historyFormData.status || ''} onChange={e=>setHistoryFormData({...historyFormData, status:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500" placeholder="例如：都計審議中" /></div>
+                    <div className="space-y-2 md:col-span-2"><label className="text-sm font-black text-slate-700">歷程說明內容</label><textarea rows="4" value={historyFormData.note || ''} onChange={e=>setHistoryFormData({...historyFormData, note:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed" placeholder="請填寫最新辦理情形..."></textarea></div>
                     <div className="space-y-2"><label className="text-sm font-black text-slate-700">資料來源 (選填)</label><input type="text" value={historyFormData.source || ''} onChange={e=>setHistoryFormData({...historyFormData, source:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none" placeholder="例如：內政部會議紀錄" /></div>
                     <div className="space-y-2"><label className="text-sm font-black text-slate-700">來源網址 (選填)</label><input type="text" value={historyFormData.sourceUrl || ''} onChange={e=>setHistoryFormData({...historyFormData, sourceUrl:e.target.value})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none text-blue-600" placeholder="https://" /></div>
                   </div>
-
                   {((projectTypes.find(t => t.name === selectedProject.type)?.phases) || []).length > 0 && (
                     <div className="pt-5 border-t border-slate-200 space-y-5">
-                      <div className="space-y-2">
-                        <label className="text-sm font-black text-slate-700">此紀錄屬於哪個階段？</label>
-                        <select value={historyFormData.belongToPhase !== undefined ? historyFormData.belongToPhase : -1} onChange={e=>setHistoryFormData({...historyFormData, belongToPhase: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none text-blue-800">
-                          <option value={-1}>* 非屬特定法定階段 (一般與前期歷程)</option>
-                          {(projectTypes.find(t => t.name === selectedProject.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}
-                        </select>
-                      </div>
-
-                      {historyFormData.mode === 'add' && (
-                        <div className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
-                          <label className="flex items-center gap-3 cursor-pointer">
-                            <input type="checkbox" checked={historyFormData.updatePhase || false} onChange={e=>setHistoryFormData({...historyFormData, updatePhase: e.target.checked})} className="w-5 h-5 text-blue-600 rounded border-slate-300" />
-                            <span className="text-sm md:text-base font-black text-slate-700">同步推進案件主階段</span>
-                          </label>
-                          {historyFormData.updatePhase && (
-                            <select value={historyFormData.newPhaseIndex || 0} onChange={e=>setHistoryFormData({...historyFormData, newPhaseIndex: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none mt-2 text-blue-800">
-                              {(projectTypes.find(t => t.name === selectedProject.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}
-                            </select>
-                          )}
-                        </div>
-                      )}
+                      <div className="space-y-2"><label className="text-sm font-black text-slate-700">此紀錄屬於哪個階段？</label><select value={historyFormData.belongToPhase !== undefined ? historyFormData.belongToPhase : -1} onChange={e=>setHistoryFormData({...historyFormData, belongToPhase: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none text-blue-800"><option value={-1}>* 非屬特定法定階段 (一般與前期歷程)</option>{(projectTypes.find(t => t.name === selectedProject.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}</select></div>
+                      {historyFormData.mode === 'add' && (<div className="p-5 bg-slate-50 rounded-xl border border-slate-200 space-y-4"><label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={historyFormData.updatePhase || false} onChange={e=>setHistoryFormData({...historyFormData, updatePhase: e.target.checked})} className="w-5 h-5 text-blue-600 rounded border-slate-300" /><span className="text-sm md:text-base font-black text-slate-700">同步推進案件主階段</span></label>{historyFormData.updatePhase && (<select value={historyFormData.newPhaseIndex || 0} onChange={e=>setHistoryFormData({...historyFormData, newPhaseIndex: parseInt(e.target.value)})} className="w-full p-3 bg-white border border-slate-300 rounded-lg text-sm md:text-base font-bold outline-none mt-2 text-blue-800">{(projectTypes.find(t => t.name === selectedProject.type)?.phases || []).map((phase, idx) => <option key={idx} value={idx}>{idx + 1}. {phase}</option>)}</select>)}</div>)}
                     </div>
                   )}
                 </div>
                 <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-100 flex flex-row items-center justify-between gap-2 shrink-0 sm:rounded-b-2xl overflow-x-auto no-scrollbar w-full">
-                  {historyFormData.mode === 'edit' ? (
-                     confirmDelete ? (
-                         <div className="flex items-center gap-2 shrink-0">
-                            <button onClick={async () => {
-                              let updatedProject = { ...selectedProject };
-                              updatedProject.history = (updatedProject.history || []).filter(log => log.id !== historyFormData.id);
-                              if (updatedProject.history.length > 0) {
-                                updatedProject.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date));
-                                updatedProject.status = updatedProject.history[0]?.status || updatedProject.status;
-                                updatedProject.lastUpdate = updatedProject.history[0]?.date.replace(/\./g, '/') || updatedProject.lastUpdate;
-                              }
-                              await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString()), updatedProject);
-                              setIsHistoryModalOpen(false);
-                              setConfirmDelete(false);
-                            }} className="px-4 py-2.5 bg-red-600 text-white rounded-lg text-sm md:text-base font-bold shadow-sm whitespace-nowrap">確定刪除</button>
-                            <button onClick={()=>setConfirmDelete(false)} className="px-4 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg text-sm md:text-base font-bold whitespace-nowrap">取消</button>
-                         </div>
-                      ) : (
-                         <button onClick={()=>setConfirmDelete(true)} className="shrink-0 px-4 py-2.5 text-red-600 border border-red-200 bg-red-50 hover:bg-red-100 rounded-lg text-sm md:text-base font-bold whitespace-nowrap">刪除此紀錄</button>
-                      )
-                  ) : <div className="shrink-0"></div>}
-                  <div className="flex items-center gap-2 shrink-0">
-                     <button onClick={()=>setIsHistoryModalOpen(false)} className="px-6 py-2.5 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg hover:bg-slate-50 shadow-sm whitespace-nowrap">取消</button>
-                     <button onClick={handleSaveHistory} className="px-8 py-2.5 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700 whitespace-nowrap">確認儲存</button>
-                  </div>
+                  {historyFormData.mode === 'edit' ? (confirmDelete ? <div className="flex items-center gap-2 shrink-0"><button onClick={async () => { let updatedProject = { ...selectedProject }; updatedProject.history = (updatedProject.history || []).filter(log => log.id !== historyFormData.id); if (updatedProject.history.length > 0) { updatedProject.history.sort((a, b) => parseTWDate(b.date) - parseTWDate(a.date)); updatedProject.status = updatedProject.history[0]?.status || updatedProject.status; updatedProject.lastUpdate = updatedProject.history[0]?.date.replace(/\./g, '/') || updatedProject.lastUpdate; } await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', updatedProject.id.toString()), updatedProject); setIsHistoryModalOpen(false); setConfirmDelete(false); }} className="px-4 py-2.5 bg-red-600 text-white rounded-lg text-sm md:text-base font-bold shadow-sm whitespace-nowrap">確定刪除</button><button onClick={()=>setConfirmDelete(false)} className="px-4 py-2.5 bg-white border border-slate-300 text-slate-700 rounded-lg text-sm md:text-base font-bold whitespace-nowrap">取消</button></div> : <button onClick={()=>setConfirmDelete(true)} className="shrink-0 px-4 py-2.5 text-red-600 border border-red-200 bg-red-50 hover:bg-red-100 rounded-lg text-sm md:text-base font-bold whitespace-nowrap">刪除此紀錄</button>) : <div className="shrink-0"></div>}
+                  <div className="flex items-center gap-2 shrink-0"><button onClick={()=>setIsHistoryModalOpen(false)} className="px-6 py-2.5 text-slate-600 font-bold text-sm md:text-base bg-white border border-slate-300 rounded-lg hover:bg-slate-50 shadow-sm whitespace-nowrap">取消</button><button onClick={handleSaveHistory} className="px-8 py-2.5 bg-blue-600 text-white rounded-lg font-bold text-sm md:text-base shadow-md hover:bg-blue-700 whitespace-nowrap">確認儲存</button></div>
                 </div>
               </div>
             </div>
