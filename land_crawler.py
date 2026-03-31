@@ -3,7 +3,7 @@ import json
 import logging
 import requests
 import re
-import time  # 新增：用於延遲等待的模組
+import time
 from datetime import datetime
 from bs4 import BeautifulSoup
 import firebase_admin
@@ -62,17 +62,14 @@ def fetch_gov_url_text(url):
         res.raise_for_status()
         
         soup = BeautifulSoup(res.content, 'html.parser')
-        # 移除 script 與 style 以減少雜訊
         for script in soup(["script", "style"]):
             script.extract()
             
         text = soup.get_text(separator='\n')
-        # 清理多餘空白
         lines = (line.strip() for line in text.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         clean_text = '\n'.join(chunk for chunk in chunks if chunk)
         
-        # 限制字數避免超過 AI token 限制
         return clean_text[:6000]
     except Exception as e:
         logger.warning(f"⚠️ 無法抓取網址內容 {url}: {e}")
@@ -88,7 +85,7 @@ def fetch_google_news_rss(query):
         res.raise_for_status()
         
         soup = BeautifulSoup(res.content, 'xml')
-        items = soup.find_all('item')[:5] # 取前5則最新消息
+        items = soup.find_all('item')[:5]
         
         news_summary = ""
         for item in items:
@@ -101,6 +98,31 @@ def fetch_google_news_rss(query):
         logger.warning(f"⚠️ Google RSS 抓取失敗 ({query}): {e}")
         return "", ""
 
+def call_gemini_with_retry(prompt, max_retries=3):
+    """(新增功能) 呼叫 Gemini AI，若遇到 429 頻率限制則自動解析等待時間並重試"""
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            return response.text.strip()
+        except Exception as e:
+            error_msg = str(e)
+            # 檢查是否為 429 頻率限制錯誤
+            if "429" in error_msg or "quota" in error_msg.lower():
+                wait_time = 30 # 預設等 30 秒
+                # 嘗試從錯誤訊息中捕捉 "retry in Xs" 的明確秒數
+                match = re.search(r'retry in (\d+\.?\d*)s', error_msg)
+                if match:
+                    wait_time = float(match.group(1)) + 5 # 依照官方要求秒數多加 5 秒緩衝
+                
+                logger.warning(f"   ⏳ 觸發 API 頻率限制，暫停 {wait_time:.1f} 秒後自動重試 (第 {attempt+1}/{max_retries} 次)...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"   ❌ AI 判讀時發生未知錯誤: {e}")
+                return None
+    
+    logger.error("   ❌ API 頻率限制重試次數已達上限，跳過此筆判讀。")
+    return None
+
 # ==========================================
 # 4. 主程式邏輯 (三合一查核)
 # ==========================================
@@ -110,7 +132,6 @@ def main():
     user_ref = db.collection('artifacts').document(APP_ID).collection('users').document(FIREBASE_UID)
     projects = user_ref.collection('projects').where('isArchived', '==', False).stream()
     
-    # 產生當天民國年字串 (例如: 115.03.31)
     now = datetime.now()
     roc_date_str = f"{now.year - 1911}.{now.strftime('%m.%d')}"
 
@@ -149,21 +170,14 @@ def main():
                         f"網頁內容摘要：\n{gov_text}"
                     )
                     
-                    try:
-                        response = model.generate_content(prompt)
-                        ans = response.text.strip()
-                        if ans and "無更新" not in ans and len(ans) > 2:
-                            found_update = True
-                            update_note = ans
-                            source_url = url
-                            source_type = "特定來源直擊"
-                            break # 找到進度就跳出該案件的網址迴圈
-                    except Exception as e:
-                        logger.error(f"   ❌ AI 判讀官網內容時發生錯誤: {e}")
-                    finally:
-                        # 新增防限速延遲機制
-                        logger.info("   ⏳ 避免觸發 API 頻率限制，暫停 15 秒...")
-                        time.sleep(15)
+                    ans = call_gemini_with_retry(prompt)
+                    
+                    if ans and "無更新" not in ans and len(ans) > 2:
+                        found_update = True
+                        update_note = ans
+                        source_url = url
+                        source_type = "特定來源直擊"
+                        break
         
         # --- 策略 B：如果官網沒動靜，或是沒設官網，則啟動關鍵字 RSS 廣泛搜尋 ---
         if not found_update:
@@ -181,20 +195,13 @@ def main():
                     f"如果是舊聞、無關新聞、或純粹房地產廣告，請務必只回答「無更新」。"
                 )
                 
-                try:
-                    response = model.generate_content(prompt)
-                    ans = response.text.strip()
-                    if ans and "無更新" not in ans and len(ans) > 2:
-                        found_update = True
-                        update_note = ans
-                        source_url = first_link
-                        source_type = "網路公開資訊/新聞稿"
-                except Exception as e:
-                    logger.error(f"   ❌ AI 判讀新聞內容時發生錯誤: {e}")
-                finally:
-                    # 新增防限速延遲機制
-                    logger.info("   ⏳ 避免觸發 API 頻率限制，暫停 15 秒...")
-                    time.sleep(15)
+                ans = call_gemini_with_retry(prompt)
+                
+                if ans and "無更新" not in ans and len(ans) > 2:
+                    found_update = True
+                    update_note = ans
+                    source_url = first_link
+                    source_type = "網路公開資訊/新聞稿"
 
         # --- 寫入 Firebase 待審核區 ---
         if found_update:
@@ -205,7 +212,7 @@ def main():
                     "id": record_id, 
                     "projectId": p_id, 
                     "projectName": name,
-                    "date": roc_date_str, # 自動轉換的民國年格式
+                    "date": roc_date_str,
                     "note": f"【AI 判讀最新動態】{update_note}", 
                     "source": source_type,
                     "sourceUrl": source_url, 
@@ -215,6 +222,9 @@ def main():
                 logger.error(f"   ❌ 寫入資料庫失敗: {e}")
         else:
             logger.info("   平靜無波，無最新動態。")
+
+        # 每個專案查核完畢後，基本暫停 5 秒，減緩請求密度
+        time.sleep(5)
 
     logger.info("\n🎉 所有案件查核完畢！")
 
