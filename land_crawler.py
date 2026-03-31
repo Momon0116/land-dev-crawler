@@ -8,6 +8,7 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter # 更新 Firestore 語法用
 import google.generativeai as genai
 import urllib.parse
 
@@ -35,7 +36,8 @@ if not all([FIREBASE_CREDENTIALS, FIREBASE_UID, GEMINI_API_KEY]):
 try:
     cred_dict = json.loads(FIREBASE_CREDENTIALS)
     cred = credentials.Certificate(cred_dict)
-    firebase_admin.initialize_app(cred)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
     db = firestore.client()
     logger.info("✅ Firebase 初始化成功")
 except Exception as e:
@@ -58,7 +60,7 @@ def fetch_gov_url_text(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         if not url.startswith('http'): url = 'https://' + url
-        res = requests.get(url, headers=headers, timeout=15)
+        res = requests.get(url, headers=headers, timeout=20) # 增加超時時間至 20s
         res.raise_for_status()
         
         soup = BeautifulSoup(res.content, 'html.parser')
@@ -81,7 +83,7 @@ def fetch_google_news_rss(query):
         encoded_query = urllib.parse.quote(query)
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
         
         soup = BeautifulSoup(res.content, 'xml')
@@ -99,28 +101,25 @@ def fetch_google_news_rss(query):
         return "", ""
 
 def call_gemini_with_retry(prompt, max_retries=3):
-    """(新增功能) 呼叫 Gemini AI，若遇到 429 頻率限制則自動解析等待時間並重試"""
+    """呼叫 Gemini AI，處理 429 頻率限制與重試"""
     for attempt in range(max_retries):
         try:
+            # 每次正式呼叫前先休息 2 秒，避免瞬間併發
+            time.sleep(2)
             response = model.generate_content(prompt)
             return response.text.strip()
         except Exception as e:
             error_msg = str(e)
-            # 檢查是否為 429 頻率限制錯誤
             if "429" in error_msg or "quota" in error_msg.lower():
-                wait_time = 30 # 預設等 30 秒
-                # 嘗試從錯誤訊息中捕捉 "retry in Xs" 的明確秒數
+                # 解析 Google 要求的等待時間，若無則預設等 60 秒
                 match = re.search(r'retry in (\d+\.?\d*)s', error_msg)
-                if match:
-                    wait_time = float(match.group(1)) + 5 # 依照官方要求秒數多加 5 秒緩衝
+                wait_time = (float(match.group(1)) + 10) if match else 60
                 
                 logger.warning(f"   ⏳ 觸發 API 頻率限制，暫停 {wait_time:.1f} 秒後自動重試 (第 {attempt+1}/{max_retries} 次)...")
                 time.sleep(wait_time)
             else:
-                logger.error(f"   ❌ AI 判讀時發生未知錯誤: {e}")
+                logger.error(f"   ❌ AI 判讀時發生錯誤: {e}")
                 return None
-    
-    logger.error("   ❌ API 頻率限制重試次數已達上限，跳過此筆判讀。")
     return None
 
 # ==========================================
@@ -129,84 +128,90 @@ def call_gemini_with_retry(prompt, max_retries=3):
 def main():
     logger.info("🚀 開始執行土地開發進度自動查核...")
     
-    user_ref = db.collection('artifacts').document(APP_ID).collection('users').document(FIREBASE_UID)
-    projects = user_ref.collection('projects').where('isArchived', '==', False).stream()
-    
+    try:
+        user_ref = db.collection('artifacts').document(APP_ID).collection('users').document(FIREBASE_UID)
+        # 使用最新的 FieldFilter 語法
+        projects_query = user_ref.collection('projects').where(filter=FieldFilter('isArchived', '==', False))
+        projects = list(projects_query.stream()) # 轉為 list 避免長時間佔用串流導致逾時
+    except Exception as e:
+        logger.error(f"❌ 讀取資料庫專案清單失敗: {e}")
+        return
+
     now = datetime.now()
     roc_date_str = f"{now.year - 1911}.{now.strftime('%m.%d')}"
 
     for doc_snap in projects:
-        p_id = doc_snap.id
-        p_data = doc_snap.to_dict()
-        name = p_data.get('name', '未知案件')
-        city = p_data.get('city', '')
-        keywords = p_data.get('keywords', '').strip()
-        gov_url_str = p_data.get('govUrl', '').strip()
-        
-        logger.info(f"\n🔍 正在查核案件：【{name}】")
-        
-        found_update = False
-        update_note = ""
-        source_url = ""
-        source_type = ""
+        try:
+            p_id = doc_snap.id
+            p_data = doc_snap.to_dict()
+            name = p_data.get('name', '未知案件')
+            city = p_data.get('city', '')
+            keywords = p_data.get('keywords', '').strip()
+            gov_url_str = p_data.get('govUrl', '').strip()
+            
+            logger.info(f"\n🔍 正在查核案件：【{name}】")
+            
+            # 策略：每個案件查核前，主動深層睡眠，分散流量
+            logger.info("   ⏳ 正在進行主動式防禦限速 (休息 15 秒)...")
+            time.sleep(15)
 
-        # --- 策略 A：如果有設定特定政府網址，優先掃描網址 ---
-        if gov_url_str:
-            urls = re.split(r'[\s,]+', gov_url_str)
-            for url in urls:
-                if not url: continue
-                logger.info(f"   -> 掃描特定網頁：{url}")
-                gov_text = fetch_gov_url_text(url)
+            found_update = False
+            update_note = ""
+            source_url = ""
+            source_type = ""
+
+            # --- 策略 A：如果有設定特定政府網址，優先掃描網址 ---
+            if gov_url_str:
+                urls = re.split(r'[\s,]+', gov_url_str)
+                for url in urls:
+                    if not url: continue
+                    logger.info(f"   -> 掃描特定網頁：{url}")
+                    gov_text = fetch_gov_url_text(url)
+                    
+                    if gov_text:
+                        prompt = (
+                            f"你是一個專業的土地開發與都市計畫分析師。\n"
+                            f"以下是從政府特定網站擷取的最新文字內容。\n"
+                            f"目標追蹤專案：【{name}】\n"
+                            f"關聯關鍵字：【{keywords}】\n"
+                            f"請嚴格判斷網頁內容中是否有關於此案的「最新公告」、「會議進度」或「辦理情形」？\n"
+                            f"如果有實質進度，請用一句話（30字以內）總結重點，不要包含引號或多餘問候。\n"
+                            f"如果沒有新的進度、找不到相關資訊，請務必只回答「無更新」。\n\n"
+                            f"網頁內容摘要：\n{gov_text}"
+                        )
+                        ans = call_gemini_with_retry(prompt)
+                        if ans and "無更新" not in ans and len(ans) > 2:
+                            found_update = True
+                            update_note = ans
+                            source_url = url
+                            source_type = "特定來源直擊"
+                            break
+            
+            # --- 策略 B：啟動廣泛搜尋 ---
+            if not found_update:
+                search_query = keywords if keywords else f"{city} {name}"
+                logger.info(f"   -> 啟動廣泛搜尋：{search_query}")
+                news_text, first_link = fetch_google_news_rss(search_query)
                 
-                if gov_text:
+                if news_text:
                     prompt = (
-                        f"你是一個專業的土地開發與都市計畫分析師。\n"
-                        f"以下是從政府特定網站擷取的最新文字內容。\n"
-                        f"目標追蹤專案：【{name}】\n"
-                        f"關聯關鍵字：【{keywords}】\n"
-                        f"請嚴格判斷網頁內容中是否有關於此案的「最新公告」、「會議進度」或「辦理情形」？\n"
-                        f"如果有實質進度，請用一句話（30字以內）總結重點，不要包含引號或多餘問候。\n"
-                        f"如果沒有新的進度、找不到相關資訊，請務必只回答「無更新」。\n\n"
-                        f"網頁內容摘要：\n{gov_text}"
+                        f"你是一個專業的土地開發分析師。\n"
+                        f"以下是關於「{search_query}」的最新網路新聞或公告搜尋結果：\n\n"
+                        f"{news_text}\n\n"
+                        f"請判斷這些資訊中，是否包含該案件實質的「最新進度」、「審議結果」或「政府公告」？\n"
+                        f"如果有，請用一句話（30字以內）總結最新動態，不要包含引號。\n"
+                        f"如果是舊聞、無關新聞、或純粹房地產廣告，請務必只回答「無更新」。"
                     )
-                    
                     ans = call_gemini_with_retry(prompt)
-                    
                     if ans and "無更新" not in ans and len(ans) > 2:
                         found_update = True
                         update_note = ans
-                        source_url = url
-                        source_type = "特定來源直擊"
-                        break
-        
-        # --- 策略 B：如果官網沒動靜，或是沒設官網，則啟動關鍵字 RSS 廣泛搜尋 ---
-        if not found_update:
-            search_query = keywords if keywords else f"{city} {name}"
-            logger.info(f"   -> 啟動廣泛搜尋：{search_query}")
-            news_text, first_link = fetch_google_news_rss(search_query)
-            
-            if news_text:
-                prompt = (
-                    f"你是一個專業的土地開發分析師。\n"
-                    f"以下是關於「{search_query}」的最新網路新聞或公告搜尋結果：\n\n"
-                    f"{news_text}\n\n"
-                    f"請判斷這些資訊中，是否包含該案件實質的「最新進度」、「審議結果」或「政府公告」？\n"
-                    f"如果有，請用一句話（30字以內）總結最新動態，不要包含引號。\n"
-                    f"如果是舊聞、無關新聞、或純粹房地產廣告，請務必只回答「無更新」。"
-                )
-                
-                ans = call_gemini_with_retry(prompt)
-                
-                if ans and "無更新" not in ans and len(ans) > 2:
-                    found_update = True
-                    update_note = ans
-                    source_url = first_link
-                    source_type = "網路公開資訊/新聞稿"
+                        source_url = first_link
+                        source_type = "網路公開資訊/新聞稿"
 
-        # --- 寫入 Firebase 待審核區 ---
-        if found_update:
-            logger.info(f"   🚨 發現動態：{update_note} ({source_type})")
-            try:
+            # --- 寫入 Firebase 待審核區 ---
+            if found_update:
+                logger.info(f"   🚨 發現動態：{update_note} ({source_type})")
                 record_id = str(datetime.now().timestamp()).replace('.', '')
                 user_ref.collection('pending_updates').document(record_id).set({
                     "id": record_id, 
@@ -218,13 +223,12 @@ def main():
                     "sourceUrl": source_url, 
                     "createdAt": firestore.SERVER_TIMESTAMP
                 })
-            except Exception as e:
-                logger.error(f"   ❌ 寫入資料庫失敗: {e}")
-        else:
-            logger.info("   平靜無波，無最新動態。")
+            else:
+                logger.info("   平靜無波，無最新動態。")
 
-        # 每個專案查核完畢後，基本暫停 5 秒，減緩請求密度
-        time.sleep(5)
+        except Exception as p_err:
+            logger.error(f"❌ 查核案件出錯，自動跳過該案：{p_err}")
+            continue # 關鍵：出錯就跳下一個，不崩潰
 
     logger.info("\n🎉 所有案件查核完畢！")
 
