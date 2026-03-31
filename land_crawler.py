@@ -1,166 +1,213 @@
-import requests
-from bs4 import BeautifulSoup
-import logging
-from datetime import datetime
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import os
 import json
-import sys
-
-# Firebase Admin SDK
+import logging
+import requests
+import re
+from datetime import datetime
+from bs4 import BeautifulSoup
 import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
-
-# 匯入 Google Gemini AI 套件
+from firebase_admin import credentials, firestore
 import google.generativeai as genai
+import urllib.parse
 
 # ==========================================
-# 1. 系統設定與日誌初始化
+# 0. 系統日誌設定
 # ==========================================
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s [%(levelname)s] %(message)s', 
-    datefmt='%Y-%m-%d %H:%M:%S', 
-    force=True
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class LandDevCrawler:
-    def __init__(self):
-        self.session = self._build_session()
-        self.db = None
-        self.ai_model = None
-        self.app_id = "land-dev-app"
+# ==========================================
+# 1. 環境變數與金鑰載入
+# ==========================================
+FIREBASE_CREDENTIALS = os.environ.get("FIREBASE_CREDENTIALS")
+FIREBASE_UID = os.environ.get("FIREBASE_UID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+APP_ID = "land-dev-app"
 
-        # 🔑 讀取 GitHub Secrets 環境變數
-        self.firebase_cred_raw = os.environ.get("FIREBASE_CREDENTIALS")
-        self.target_user_id = os.environ.get("FIREBASE_UID")
-        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
+if not all([FIREBASE_CREDENTIALS, FIREBASE_UID, GEMINI_API_KEY]):
+    logger.error("❌ 嚴重錯誤：找不到必要的環境變數 (FIREBASE_CREDENTIALS, FIREBASE_UID 或 GEMINI_API_KEY)")
+    exit(1)
 
-        # 啟動診斷
-        logger.info("--- [系統啟動診斷] ---")
-        logger.info(f"檔案位置: {__file__}")
-        logger.info(f"Firebase 憑證: {'✅ 偵測到' if self.firebase_cred_raw else '❌ 缺失'}")
-        logger.info(f"使用者 UID: {'✅ 偵測到' if self.target_user_id else '❌ 缺失'}")
-        logger.info(f"AI API 金鑰: {'✅ 偵測到' if self.gemini_api_key else '❌ 缺失'}")
+# ==========================================
+# 2. 初始化 Firebase 與 Gemini
+# ==========================================
+try:
+    cred_dict = json.loads(FIREBASE_CREDENTIALS)
+    cred = credentials.Certificate(cred_dict)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    logger.info("✅ Firebase 初始化成功")
+except Exception as e:
+    logger.error(f"❌ Firebase 初始化失敗: {e}")
+    exit(1)
+
+try:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    logger.info("✅ Gemini AI 初始化成功")
+except Exception as e:
+    logger.error(f"❌ Gemini AI 初始化失敗: {e}")
+    exit(1)
+
+# ==========================================
+# 3. 爬蟲與 AI 判讀輔助函式
+# ==========================================
+def fetch_gov_url_text(url):
+    """直接抓取特定政府網站的文字內容"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        if not url.startswith('http'): url = 'https://' + url
+        res = requests.get(url, headers=headers, timeout=15)
+        res.raise_for_status()
         
-        self._initialize_services()
+        soup = BeautifulSoup(res.content, 'html.parser')
+        # 移除 script 與 style 以減少雜訊
+        for script in soup(["script", "style"]):
+            script.extract()
+            
+        text = soup.get_text(separator='\n')
+        # 清理多餘空白
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        clean_text = '\n'.join(chunk for chunk in chunks if chunk)
+        
+        # 限制字數避免超過 AI token 限制
+        return clean_text[:6000]
+    except Exception as e:
+        logger.warning(f"⚠️ 無法抓取網址內容 {url}: {e}")
+        return ""
 
-    def _initialize_services(self):
-        try:
-            # 1. 初始化 Firebase 連線
-            if self.firebase_cred_raw:
-                # 雲端模式：強化 JSON 解析容錯
-                raw_json = self.firebase_cred_raw.strip()
-                # 解決 GitHub 可能對 JSON 內容多加的一層引號
-                if raw_json.startswith('"') and raw_json.endswith('"'):
-                    raw_json = json.loads(raw_json)
+def fetch_google_news_rss(query):
+    """透過 Google 新聞 RSS 抓取關鍵字最新動態"""
+    try:
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=10)
+        res.raise_for_status()
+        
+        soup = BeautifulSoup(res.content, 'xml')
+        items = soup.find_all('item')[:5] # 取前5則最新消息
+        
+        news_summary = ""
+        for item in items:
+            title = item.title.text if item.title else ""
+            pubDate = item.pubDate.text if item.pubDate else ""
+            news_summary += f"- {title} ({pubDate})\n"
+            
+        return news_summary, (items[0].link.text if items else url)
+    except Exception as e:
+        logger.warning(f"⚠️ Google RSS 抓取失敗 ({query}): {e}")
+        return "", ""
+
+# ==========================================
+# 4. 主程式邏輯 (三合一查核)
+# ==========================================
+def main():
+    logger.info("🚀 開始執行土地開發進度自動查核...")
+    
+    user_ref = db.collection('artifacts').document(APP_ID).collection('users').document(FIREBASE_UID)
+    projects = user_ref.collection('projects').where('isArchived', '==', False).stream()
+    
+    # 產生當天民國年字串 (例如: 115.03.31)
+    now = datetime.now()
+    roc_date_str = f"{now.year - 1911}.{now.strftime('%m.%d')}"
+
+    for doc_snap in projects:
+        p_id = doc_snap.id
+        p_data = doc_snap.to_dict()
+        name = p_data.get('name', '未知案件')
+        city = p_data.get('city', '')
+        keywords = p_data.get('keywords', '').strip()
+        gov_url_str = p_data.get('govUrl', '').strip()
+        
+        logger.info(f"\n🔍 正在查核案件：【{name}】")
+        
+        found_update = False
+        update_note = ""
+        source_url = ""
+        source_type = ""
+
+        # --- 策略 A：如果有設定特定政府網址，優先掃描網址 ---
+        if gov_url_str:
+            urls = re.split(r'[\s,]+', gov_url_str)
+            for url in urls:
+                if not url: continue
+                logger.info(f"   -> 掃描特定網頁：{url}")
+                gov_text = fetch_gov_url_text(url)
+                
+                if gov_text:
+                    prompt = (
+                        f"你是一個專業的土地開發與都市計畫分析師。\n"
+                        f"以下是從政府特定網站擷取的最新文字內容。\n"
+                        f"目標追蹤專案：【{name}】\n"
+                        f"關聯關鍵字：【{keywords}】\n"
+                        f"請嚴格判斷網頁內容中是否有關於此案的「最新公告」、「會議進度」或「辦理情形」？\n"
+                        f"如果有實質進度，請用一句話（30字以內）總結重點，不要包含引號或多餘問候。\n"
+                        f"如果沒有新的進度、找不到相關資訊，請務必只回答「無更新」。\n\n"
+                        f"網頁內容摘要：\n{gov_text}"
+                    )
+                    
+                    try:
+                        response = model.generate_content(prompt)
+                        ans = response.text.strip()
+                        if ans and "無更新" not in ans and len(ans) > 2:
+                            found_update = True
+                            update_note = ans
+                            source_url = url
+                            source_type = "特定來源直擊"
+                            break # 找到進度就跳出該案件的網址迴圈
+                    except Exception as e:
+                        logger.error(f"   ❌ AI 判讀官網內容時發生錯誤: {e}")
+        
+        # --- 策略 B：如果官網沒動靜，或是沒設官網，則啟動關鍵字 RSS 廣泛搜尋 ---
+        if not found_update:
+            search_query = keywords if keywords else f"{city} {name}"
+            logger.info(f"   -> 啟動廣泛搜尋：{search_query}")
+            news_text, first_link = fetch_google_news_rss(search_query)
+            
+            if news_text:
+                prompt = (
+                    f"你是一個專業的土地開發分析師。\n"
+                    f"以下是關於「{search_query}」的最新網路新聞或公告搜尋結果：\n\n"
+                    f"{news_text}\n\n"
+                    f"請判斷這些資訊中，是否包含該案件實質的「最新進度」、「審議結果」或「政府公告」？\n"
+                    f"如果有，請用一句話（30字以內）總結最新動態，不要包含引號。\n"
+                    f"如果是舊聞、無關新聞、或純粹房地產廣告，請務必只回答「無更新」。"
+                )
                 
                 try:
-                    cred_dict = json.loads(raw_json)
-                    cred = credentials.Certificate(cred_dict)
-                    logger.info("☁️ 雲端憑證解析成功")
-                except json.JSONDecodeError as e:
-                    logger.error(f"❌ JSON 格式損壞，請檢查 Secret 內容: {e}")
-                    sys.exit(1)
-            else:
-                # 💻 本機測試模式：回退到您之前的 Windows 路徑
-                local_path = r"C:\Users\User\work-report\Python\land-dev-dashboard-firebase-adminsdk-fbsvc-b9b9e79b3d.json"
-                if os.path.exists(local_path):
-                    logger.info(f"💻 採用本機模式，載入金鑰：{local_path}")
-                    cred = credentials.Certificate(local_path)
-                    if not self.target_user_id:
-                        # 使用本機運作正常的預設 UID
-                        self.target_user_id = "Gc4VCR2nTeVXmmmOUKFKwfZG2WF3"
-                else:
-                    logger.error("❌ 無法找到任何 Firebase 金鑰來源")
-                    sys.exit(1)
+                    response = model.generate_content(prompt)
+                    ans = response.text.strip()
+                    if ans and "無更新" not in ans and len(ans) > 2:
+                        found_update = True
+                        update_note = ans
+                        source_url = first_link
+                        source_type = "網路公開資訊/新聞稿"
+                except Exception as e:
+                    logger.error(f"   ❌ AI 判讀新聞內容時發生錯誤: {e}")
 
-            if not firebase_admin._apps:
-                firebase_admin.initialize_app(cred)
-            self.db = firestore.client()
-            logger.info(f"✅ Firebase 連線成功，目標使用者：{self.target_user_id}")
+        # --- 寫入 Firebase 待審核區 ---
+        if found_update:
+            logger.info(f"   🚨 發現動態：{update_note} ({source_type})")
+            try:
+                record_id = str(datetime.now().timestamp()).replace('.', '')
+                user_ref.collection('pending_updates').document(record_id).set({
+                    "id": record_id, 
+                    "projectId": p_id, 
+                    "projectName": name,
+                    "date": roc_date_str, # 自動轉換的民國年格式
+                    "note": f"【AI 判讀最新動態】{update_note}", 
+                    "source": source_type,
+                    "sourceUrl": source_url, 
+                    "createdAt": firestore.SERVER_TIMESTAMP
+                })
+            except Exception as e:
+                logger.error(f"   ❌ 寫入資料庫失敗: {e}")
+        else:
+            logger.info("   平靜無波，無最新動態。")
 
-            # 2. 初始化 Gemini AI (採用 Gemini 2.5 Flash)
-            if self.gemini_api_key:
-                genai.configure(api_key=self.gemini_api_key)
-                self.ai_model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
-                logger.info("🧠 AI 分析大腦已啟動")
-
-        except Exception as e:
-            logger.error(f"🔥 初始化致命錯誤: {e}")
-            sys.exit(1)
-
-    def _build_session(self):
-        session = requests.Session()
-        retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-        session.mount("https://", HTTPAdapter(max_retries=retry))
-        session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-        return session
-
-    def crawl_and_update(self):
-        if not self.db or not self.target_user_id: return
-
-        try:
-            # 讀取 Firestore 專案清單
-            # 路徑：/artifacts/land-dev-app/users/{userId}/projects
-            user_ref = self.db.collection('artifacts').document(self.app_id).collection('users').document(self.target_user_id)
-            docs = user_ref.collection('projects').stream()
-            
-            projects = []
-            for d in docs:
-                p_data = d.to_dict()
-                if not p_data.get("isArchived"): projects.append(p_data)
-
-            logger.info(f"📥 成功載入 {len(projects)} 筆案件進行雲端查核")
-
-            for proj in projects:
-                p_id, name, city = proj.get("id"), proj.get("name"), proj.get("city", "")
-                logger.info(f"🔍 搜尋中：【{city} {name}】")
-                
-                # Google News RSS 搜尋
-                params = {"q": f'"{city}" "{name}"', "hl": "zh-TW", "gl": "TW", "ceid": "TW:zh-Hant"}
-                res = self.session.get("https://news.google.com/rss/search", params=params, timeout=10)
-                soup = BeautifulSoup(res.content, 'xml')
-                items = soup.find_all('item')[:3]
-
-                for item in items:
-                    title, link = item.title.text, item.link.text
-                    # 簡易匹配與重複檢查
-                    if name[:2] in title:
-                        if any(h.get("sourceUrl") == link for h in proj.get("history", [])): continue
-
-                        # AI 語意分析
-                        note = f"抓取到新聞：{title[:15]}..."
-                        if self.ai_model:
-                            try:
-                                prompt = f"請摘要新聞『{title}』與土地開發案『{city}{name}』的關係，字數限制15字。若無關請回 False。"
-                                response = self.ai_model.generate_content(prompt)
-                                if "False" in response.text: continue
-                                note = response.text.strip()
-                            except: pass
-
-                        logger.info(f"🚨 發現動態：{note}")
-                        # 寫入待審核區 (pending_updates)
-                        record_id = str(datetime.now().timestamp())
-                        
-                        # 將西元年轉換為民國年格式
-                        now = datetime.now()
-                        roc_year = now.year - 1911
-                        roc_date_str = f"{roc_year}.{now.strftime('%m.%d')}"
-                        
-                        user_ref.collection('pending_updates').document(record_id).set({
-                            "id": record_id, "projectId": p_id, "projectName": name,
-                            "date": roc_date_str,
-                            "note": f"【AI查核】{note}", "source": "新聞資訊",
-                            "sourceUrl": link, "createdAt": firestore.SERVER_TIMESTAMP
-                        })
-                        break 
-        except Exception as e:
-            logger.error(f"❌ 執行過程發生錯誤: {e}")
+    logger.info("\n🎉 所有案件查核完畢！")
 
 if __name__ == "__main__":
-    crawler = LandDevCrawler()
-    crawler.crawl_and_update()
+    main()
