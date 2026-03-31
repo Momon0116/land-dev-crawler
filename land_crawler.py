@@ -187,42 +187,27 @@ def main():
             if news_text:
                 all_raw_data.append(f"【Google 新聞搜尋結果】\n{news_text}")
 
-            # 2. 合併資訊並呼叫 AI (僅呼叫一次)
+            # 2. 直接將抓取到的原始資料合併送出 (移除 AI 判讀)
             if not all_raw_data:
                 logger.info("   平靜無波 (無任何資料可供查核)。")
                 continue
 
             combined_info = "\n\n---\n\n".join(all_raw_data)
             
-            prompt = (
-                f"你是一個土地開發專業分析師。\n"
-                f"請分析以下彙整的「多重來源資訊」，判斷目標專案【{name}】最近是否有「實質性」的最新進度、會議、或公告？\n"
-                f"關鍵字參考：【{keywords}】\n\n"
-                f"判讀規則：\n"
-                f"1. 若有新進度，請合併各方資訊，用一句話總結重點(30字內)。\n"
-                f"2. 若資料中全是舊聞、無關訊息、或找不到該案，請務必只回答「無更新」。\n"
-                f"3. 優先採納具有明確日期的政府公告。\n\n"
-                f"=== 彙整資訊內容 ===\n"
-                f"{combined_info}"
-            )
+            # 擷取前 1500 字，避免塞爆資料庫與前端介面
+            preview_text = combined_info[:1500] + ("\n\n...(資料過長，已截斷)..." if len(combined_info) > 1500 else "")
 
-            logger.info("   ⏳ 正在進行合併判讀 (呼叫 AI)...")
-            ans = call_gemini_with_retry(prompt)
+            logger.info("   🚨 已收集到原始資料，直接送至人工待審核區...")
+            user_ref.collection('pending_updates').document(str(time.time())).set({
+                "projectId": p_id, "projectName": name, "date": roc_date_str,
+                "note": f"【機器人原始抓取資料】\n{preview_text}", 
+                "source": "多重來源彙整 (未經 AI 過濾)",
+                "sourceUrl": first_link if not sources else sources[0].get('url', ''), 
+                "createdAt": firestore.SERVER_TIMESTAMP
+            })
 
-            if ans and "無更新" not in ans and len(ans) > 2:
-                logger.info(f"   🚨 發現新動態：{ans}")
-                user_ref.collection('pending_updates').document(str(time.time())).set({
-                    "projectId": p_id, "projectName": name, "date": roc_date_str,
-                    "note": f"【AI 綜合判讀】{ans}", 
-                    "source": "多重來源彙整 (含官網/RSS/新聞)",
-                    "sourceUrl": first_link if not sources else sources[0].get('url'), 
-                    "createdAt": firestore.SERVER_TIMESTAMP
-                })
-            else:
-                logger.info("   平靜無波。")
-
-            # 每個案件處理完，主動休息 10 秒，保護 API 配額
-            time.sleep(10)
+            # 每個案件處理完，主動休息 5 秒 (無須等 AI，速度大幅加快)
+            time.sleep(5)
 
         except Exception as err:
             logger.error(f"❌ 查核【{name}】時出錯：{err}")
