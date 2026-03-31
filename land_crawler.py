@@ -80,55 +80,54 @@ def fetch_content(url, keywords_list=None):
         if 'xml' in content_type or url.endswith('.xml') or url.endswith('.rss') or '<rss' in res.text[:200]:
             soup = BeautifulSoup(res.content, 'xml')
             
-            # 修正一：放寬 RSS 讀取筆數，從 10 筆提高到 30 筆，避免被洗版漏抓
+            # 放寬 RSS 讀取筆數，從 10 筆提高到 30 筆，避免被洗版漏抓
             items = soup.find_all(['item', 'entry'])[:30]
             rss_text = ""
             for item in items:
                 title = item.find(['title']).text if item.find(['title']) else ""
                 
-                # 修正二：讀取 description (摘要/時間) 與 pubDate (發布日)
-            desc_tag = item.find(['description', 'summary', 'content'])
-            desc_str = ""
-            if desc_tag and desc_tag.text:
-                # 簡單過濾掉可能存在的 HTML 標籤
-                desc_str = BeautifulSoup(desc_tag.text, 'html.parser').get_text(separator=' ', strip=True)[:150]
-            
-            date_tag = item.find(['pubDate', 'published', 'updated'])
-            date_str = date_tag.text.strip() if date_tag else ""
-            
-            # 新增：本地端嚴格關鍵字過濾 (解決 AI 移除後的雜訊問題)
+                # 讀取 description (摘要/時間) 與 pubDate (發布日)
+                desc_tag = item.find(['description', 'summary', 'content'])
+                desc_str = ""
+                if desc_tag and desc_tag.text:
+                    # 簡單過濾掉可能存在的 HTML 標籤
+                    desc_str = BeautifulSoup(desc_tag.text, 'html.parser').get_text(separator=' ', strip=True)[:150]
+                
+                date_tag = item.find(['pubDate', 'published', 'updated'])
+                date_str = date_tag.text.strip() if date_tag else ""
+                
+                # 本地端嚴格關鍵字過濾
+                if keywords_list:
+                    item_full_text = normalize_text(f"{title} {desc_str}")
+                    has_keyword = any(normalize_text(kw) in item_full_text for kw in keywords_list if kw)
+                    if not has_keyword:
+                        continue # 若這則 RSS 完全沒提到關鍵字，直接丟棄
+                
+                rss_text += f"- [RSS項目] {title} | 日期: {date_str} | 摘要: {desc_str}\n"
+            return rss_text
+        else:
+            soup = BeautifulSoup(res.content, 'html.parser')
+            for script in soup(["script", "style"]): script.extract()
+            text = soup.get_text(separator='\n')
+            lines = (line.strip() for line in text.splitlines())
+            clean_text = '\n'.join(chunk for chunk in lines if chunk)[:3000] # 限制單一網頁字數
+
+            # 本地端嚴格關鍵字過濾
             if keywords_list:
-                item_full_text = normalize_text(f"{title} {desc_str}")
-                has_keyword = any(normalize_text(kw) in item_full_text for kw in keywords_list if kw)
+                has_keyword = any(normalize_text(kw) in normalize_text(clean_text) for kw in keywords_list if kw)
                 if not has_keyword:
-                    continue # 若這則 RSS 完全沒提到關鍵字，直接丟棄
-            
-            rss_text += f"- [RSS項目] {title} | 日期: {date_str} | 摘要: {desc_str}\n"
-        return rss_text
-    else:
-        soup = BeautifulSoup(res.content, 'html.parser')
-        for script in soup(["script", "style"]): script.extract()
-        text = soup.get_text(separator='\n')
-        lines = (line.strip() for line in text.splitlines())
-        clean_text = '\n'.join(chunk for chunk in lines if chunk)[:3000] # 限制單一網頁字數
+                    return "" # 整個網頁都沒提到關鍵字，當作無更新
 
-        # 新增：本地端嚴格關鍵字過濾
-        if keywords_list:
-            has_keyword = any(normalize_text(kw) in normalize_text(clean_text) for kw in keywords_list if kw)
-            if not has_keyword:
-                return "" # 整個網頁都沒提到關鍵字，當作無更新
-
-        return clean_text
-except Exception as e:
-    logger.warning(f"   ⚠️ 無法抓取 {url}: {e}")
-    return ""
+            return clean_text
+    except Exception as e:
+        logger.warning(f"   ⚠️ 無法抓取 {url}: {e}")
+        return ""
 
 def fetch_google_news_text(query):
     """Google 新聞搜尋內容彙整"""
     try:
         encoded_query = urllib.parse.quote(query)
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        # Google 也加上基礎偽裝
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'}
         res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
@@ -142,29 +141,11 @@ def fetch_google_news_text(query):
     except:
         return "", ""
 
-def call_gemini_with_retry(prompt, max_retries=5):
-    """處理 AI 限速與重試"""
-    for attempt in range(max_retries):
-        try:
-            time.sleep(2)
-            response = model.generate_content(prompt)
-            return response.text.strip()
-        except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg or "quota" in error_msg.lower():
-                match = re.search(r'retry in (\d+\.?\d*)s', error_msg)
-                wait_time = max(60, (float(match.group(1)) + 15) if match else 60)
-                logger.warning(f"   ⏳ API 限速中，暫停 {wait_time:.1f} 秒後重試...")
-                time.sleep(wait_time)
-            else:
-                return None
-    return None
-
 # ==========================================
-# 4. 主程式邏輯 (合併來源判讀)
+# 4. 主程式邏輯
 # ==========================================
 def main():
-    logger.info("🚀 啟動合併來源判讀加速版機器人...")
+    logger.info("🚀 啟動查核機器人(獨立回報版)...")
     
     try:
         user_ref = db.collection('artifacts').document(APP_ID).collection('users').document(FIREBASE_UID)
@@ -185,53 +166,56 @@ def main():
             sources = p_data.get('sources', [])
             
             logger.info(f"\n🔍 查核案件：【{name}】")
-        
-        # 將關鍵字字串轉為陣列，供本地過濾使用 (若無設定則用案名)
-        kw_str = keywords.replace('，', ',') if keywords else name
-        keywords_list = [k.strip() for k in kw_str.split(',') if k.strip()]
+            
+            # 將關鍵字字串轉為陣列，供本地過濾使用
+            kw_str = keywords.replace('，', ',') if keywords else name
+            keywords_list = [k.strip() for k in kw_str.split(',') if k.strip()]
 
-        # 1. 蒐集所有來源資訊 (不立刻問 AI)
-        all_raw_data = []
-        
-        # A. 抓取特定來源
-        for s in sources:
-            url = s.get('url', '').strip()
-            s_name = s.get('name', '官方來源')
-            if not url: continue
-            logger.info(f"   -> 蒐集來源：{s_name}")
-            content = fetch_content(url, keywords_list) # 傳入關鍵字進行過濾
-            if content:
-                all_raw_data.append(f"【來源名稱：{s_name}】\n{content}")
+            found_any_data = False
+            
+            # A. 抓取特定來源 (找到就立刻獨立寫入一筆通知)
+            for s in sources:
+                url = s.get('url', '').strip()
+                s_name = s.get('name', '官方來源')
+                if not url: continue
+                logger.info(f"   -> 蒐集來源：{s_name}")
+                content = fetch_content(url, keywords_list)
+                
+                if content:
+                    found_any_data = True
+                    preview_text = content[:1500] + ("\n...(截斷)..." if len(content) > 1500 else "")
+                    
+                    # 寫入專屬此來源的通知
+                    record_id = str(time.time()).replace('.', '')
+                    user_ref.collection('pending_updates').document(record_id).set({
+                        "projectId": p_id, "projectName": name, "date": roc_date_str,
+                        "note": f"【機器人原始抓取資料】\n{preview_text}", 
+                        "source": f"{s_name}", # 獨立來源名稱
+                        "sourceUrl": url, 
+                        "createdAt": firestore.SERVER_TIMESTAMP
+                    })
+                    time.sleep(1) # 避免 record_id 重複
 
-        # B. 抓取 Google 新聞作為備援資訊
-        search_query = keywords if keywords else f"{p_data.get('city', '')} {name}"
-            # 修復：將使用的關鍵字印在 Log 中，確保查詢邏輯透明
+            # B. 抓取 Google 新聞 (找到也獨立寫入一筆通知)
+            search_query = keywords if keywords else f"{p_data.get('city', '')} {name}"
             logger.info(f"   -> 蒐集 Google 新聞搜尋結果 (使用關鍵字: {search_query})")
             news_text, first_link = fetch_google_news_text(search_query)
-            if news_text:
-                all_raw_data.append(f"【Google 新聞搜尋結果】\n{news_text}")
-
-            # 2. 直接將抓取到的原始資料合併送出 (移除 AI 判讀)
-            if not all_raw_data:
-                logger.info("   平靜無波 (無任何資料可供查核)。")
-                continue
-
-            combined_info = "\n\n---\n\n".join(all_raw_data)
             
-            # 擷取前 1500 字，避免塞爆資料庫與前端介面
-            preview_text = combined_info[:1500] + ("\n\n...(資料過長，已截斷)..." if len(combined_info) > 1500 else "")
+            if news_text:
+                found_any_data = True
+                record_id = str(time.time()).replace('.', '')
+                user_ref.collection('pending_updates').document(record_id).set({
+                    "projectId": p_id, "projectName": name, "date": roc_date_str,
+                    "note": f"【Google 新聞搜尋結果】\n{news_text}", 
+                    "source": "網路公開資訊/新聞稿",
+                    "sourceUrl": first_link, 
+                    "createdAt": firestore.SERVER_TIMESTAMP
+                })
 
-            logger.info("   🚨 已收集到原始資料，直接送至人工待審核區...")
-            user_ref.collection('pending_updates').document(str(time.time())).set({
-                "projectId": p_id, "projectName": name, "date": roc_date_str,
-                "note": f"【機器人原始抓取資料】\n{preview_text}", 
-                "source": "多重來源彙整 (未經 AI 過濾)",
-                "sourceUrl": first_link if not sources else sources[0].get('url', ''), 
-                "createdAt": firestore.SERVER_TIMESTAMP
-            })
+            if not found_any_data:
+                logger.info("   平靜無波 (無任何資料可供查核)。")
 
-            # 每個案件處理完，主動休息 5 秒 (無須等 AI，速度大幅加快)
-            time.sleep(5)
+            time.sleep(5) # 每個案件休息一下
 
         except Exception as err:
             logger.error(f"❌ 查核【{name}】時出錯：{err}")
