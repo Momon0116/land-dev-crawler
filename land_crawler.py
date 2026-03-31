@@ -56,7 +56,12 @@ except Exception as e:
 # 3. 爬蟲輔助函式
 # ==========================================
 
-def fetch_content(url):
+def normalize_text(text):
+    """正規化字串：統一括號與引號格式，轉小寫以提升比對成功率"""
+    if not text: return ""
+    return text.replace('（', '(').replace('）', ')').replace('「', '').replace('」', '').lower()
+
+def fetch_content(url, keywords_list=None):
     """抓取內容：若是 RSS 則解析清單，若是網頁則抓純文字"""
     try:
         # 增強瀏覽器偽裝，加入語系與安全標頭，降低被政府 WAF 阻擋的機率
@@ -82,26 +87,41 @@ def fetch_content(url):
                 title = item.find(['title']).text if item.find(['title']) else ""
                 
                 # 修正二：讀取 description (摘要/時間) 與 pubDate (發布日)
-                desc_tag = item.find(['description', 'summary', 'content'])
-                desc_str = ""
-                if desc_tag and desc_tag.text:
-                    # 簡單過濾掉可能存在的 HTML 標籤
-                    desc_str = BeautifulSoup(desc_tag.text, 'html.parser').get_text(separator=' ', strip=True)[:150]
-                
-                date_tag = item.find(['pubDate', 'published', 'updated'])
-                date_str = date_tag.text.strip() if date_tag else ""
-                
-                rss_text += f"- [RSS項目] {title} | 日期: {date_str} | 摘要: {desc_str}\n"
-            return rss_text
-        else:
-            soup = BeautifulSoup(res.content, 'html.parser')
-            for script in soup(["script", "style"]): script.extract()
-            text = soup.get_text(separator='\n')
-            lines = (line.strip() for line in text.splitlines())
-            return '\n'.join(chunk for chunk in lines if chunk)[:3000] # 限制單一網頁字數
-    except Exception as e:
-        logger.warning(f"   ⚠️ 無法抓取 {url}: {e}")
-        return ""
+            desc_tag = item.find(['description', 'summary', 'content'])
+            desc_str = ""
+            if desc_tag and desc_tag.text:
+                # 簡單過濾掉可能存在的 HTML 標籤
+                desc_str = BeautifulSoup(desc_tag.text, 'html.parser').get_text(separator=' ', strip=True)[:150]
+            
+            date_tag = item.find(['pubDate', 'published', 'updated'])
+            date_str = date_tag.text.strip() if date_tag else ""
+            
+            # 新增：本地端嚴格關鍵字過濾 (解決 AI 移除後的雜訊問題)
+            if keywords_list:
+                item_full_text = normalize_text(f"{title} {desc_str}")
+                has_keyword = any(normalize_text(kw) in item_full_text for kw in keywords_list if kw)
+                if not has_keyword:
+                    continue # 若這則 RSS 完全沒提到關鍵字，直接丟棄
+            
+            rss_text += f"- [RSS項目] {title} | 日期: {date_str} | 摘要: {desc_str}\n"
+        return rss_text
+    else:
+        soup = BeautifulSoup(res.content, 'html.parser')
+        for script in soup(["script", "style"]): script.extract()
+        text = soup.get_text(separator='\n')
+        lines = (line.strip() for line in text.splitlines())
+        clean_text = '\n'.join(chunk for chunk in lines if chunk)[:3000] # 限制單一網頁字數
+
+        # 新增：本地端嚴格關鍵字過濾
+        if keywords_list:
+            has_keyword = any(normalize_text(kw) in normalize_text(clean_text) for kw in keywords_list if kw)
+            if not has_keyword:
+                return "" # 整個網頁都沒提到關鍵字，當作無更新
+
+        return clean_text
+except Exception as e:
+    logger.warning(f"   ⚠️ 無法抓取 {url}: {e}")
+    return ""
 
 def fetch_google_news_text(query):
     """Google 新聞搜尋內容彙整"""
@@ -165,22 +185,26 @@ def main():
             sources = p_data.get('sources', [])
             
             logger.info(f"\n🔍 查核案件：【{name}】")
-            
-            # 1. 蒐集所有來源資訊 (不立刻問 AI)
-            all_raw_data = []
-            
-            # A. 抓取特定來源
-            for s in sources:
-                url = s.get('url', '').strip()
-                s_name = s.get('name', '官方來源')
-                if not url: continue
-                logger.info(f"   -> 蒐集來源：{s_name}")
-                content = fetch_content(url)
-                if content:
-                    all_raw_data.append(f"【來源名稱：{s_name}】\n{content}")
+        
+        # 將關鍵字字串轉為陣列，供本地過濾使用 (若無設定則用案名)
+        kw_str = keywords.replace('，', ',') if keywords else name
+        keywords_list = [k.strip() for k in kw_str.split(',') if k.strip()]
 
-            # B. 抓取 Google 新聞作為備援資訊
-            search_query = keywords if keywords else f"{p_data.get('city', '')} {name}"
+        # 1. 蒐集所有來源資訊 (不立刻問 AI)
+        all_raw_data = []
+        
+        # A. 抓取特定來源
+        for s in sources:
+            url = s.get('url', '').strip()
+            s_name = s.get('name', '官方來源')
+            if not url: continue
+            logger.info(f"   -> 蒐集來源：{s_name}")
+            content = fetch_content(url, keywords_list) # 傳入關鍵字進行過濾
+            if content:
+                all_raw_data.append(f"【來源名稱：{s_name}】\n{content}")
+
+        # B. 抓取 Google 新聞作為備援資訊
+        search_query = keywords if keywords else f"{p_data.get('city', '')} {name}"
             # 修復：將使用的關鍵字印在 Log 中，確保查詢邏輯透明
             logger.info(f"   -> 蒐集 Google 新聞搜尋結果 (使用關鍵字: {search_query})")
             news_text, first_link = fetch_google_news_text(search_query)
