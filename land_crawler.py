@@ -59,7 +59,14 @@ except Exception as e:
 def fetch_content(url):
     """抓取內容：若是 RSS 則解析清單，若是網頁則抓純文字"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        # 增強瀏覽器偽裝，加入語系與安全標頭，降低被政府 WAF 阻擋的機率
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
         if not url.startswith('http'): url = 'https://' + url
         res = requests.get(url, headers=headers, timeout=20)
         res.raise_for_status()
@@ -67,11 +74,24 @@ def fetch_content(url):
         content_type = res.headers.get('Content-Type', '').lower()
         if 'xml' in content_type or url.endswith('.xml') or url.endswith('.rss') or '<rss' in res.text[:200]:
             soup = BeautifulSoup(res.content, 'xml')
-            items = soup.find_all(['item', 'entry'])[:10]
+            
+            # 修正一：放寬 RSS 讀取筆數，從 10 筆提高到 30 筆，避免被洗版漏抓
+            items = soup.find_all(['item', 'entry'])[:30]
             rss_text = ""
             for item in items:
                 title = item.find(['title']).text if item.find(['title']) else ""
-                rss_text += f"- [RSS項目] {title}\n"
+                
+                # 修正二：讀取 description (摘要/時間) 與 pubDate (發布日)
+                desc_tag = item.find(['description', 'summary', 'content'])
+                desc_str = ""
+                if desc_tag and desc_tag.text:
+                    # 簡單過濾掉可能存在的 HTML 標籤
+                    desc_str = BeautifulSoup(desc_tag.text, 'html.parser').get_text(separator=' ', strip=True)[:150]
+                
+                date_tag = item.find(['pubDate', 'published', 'updated'])
+                date_str = date_tag.text.strip() if date_tag else ""
+                
+                rss_text += f"- [RSS項目] {title} | 日期: {date_str} | 摘要: {desc_str}\n"
             return rss_text
         else:
             soup = BeautifulSoup(res.content, 'html.parser')
@@ -88,7 +108,9 @@ def fetch_google_news_text(query):
     try:
         encoded_query = urllib.parse.quote(query)
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        res = requests.get(url, timeout=15)
+        # Google 也加上基礎偽裝
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'}
+        res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
         soup = BeautifulSoup(res.content, 'xml')
         items = soup.find_all('item')[:5]
@@ -159,7 +181,8 @@ def main():
 
             # B. 抓取 Google 新聞作為備援資訊
             search_query = keywords if keywords else f"{p_data.get('city', '')} {name}"
-            logger.info(f"   -> 蒐集 Google 新聞搜尋結果")
+            # 修復：將使用的關鍵字印在 Log 中，確保查詢邏輯透明
+            logger.info(f"   -> 蒐集 Google 新聞搜尋結果 (使用關鍵字: {search_query})")
             news_text, first_link = fetch_google_news_text(search_query)
             if news_text:
                 all_raw_data.append(f"【Google 新聞搜尋結果】\n{news_text}")
